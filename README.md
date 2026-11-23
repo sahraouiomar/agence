@@ -1,0 +1,79 @@
+# إنجليزي بالعربي — English for Arabic speakers (Tunisia)
+
+Application Android (APK) pour **comprendre l'anglais** quand on parle **arabe** (pensée pour un utilisateur tunisien).
+Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par phrase, et audio à **vitesse réglable**.
+
+📥 **APK prêt à installer : [`apk/EnglishArabi.apk`](apk/EnglishArabi.apk)** (Android 8.0+, ~31 Mo)
+
+> Installation : copier l'APK sur le téléphone → l'ouvrir → autoriser « Installer des applications inconnues ».
+> L'APK est signé avec une clé de développement (pas encore publié sur le Play Store).
+
+---
+
+## Fonctionnalités
+
+| Module | Ce qu'il fait |
+|---|---|
+| 📖 **Bibliothèque** | 12 textes gradués A1 → B2 (145 phrases) (histoires tunisiennes : Tunis, le marché, Sidi Bou Said, fables d'Ésope, entretien d'embauche, voyage en avion, phrases utiles…). Chaque phrase a sa traduction arabe. |
+| 🎧 **Lecteur audio** | Lecture du texte complet ou phrase par phrase, **surlignage mot par mot (karaoké)**, vitesses **0.5× / 0.75× / 1× / 1.25× / 1.5×** + curseur fin 0.3×–2×, répétition d'une phrase en boucle, mode « pause pour répéter » (shadowing). |
+| 👆 **Toucher un mot** | Traduction arabe instantanée (dictionnaire intégré + traduction sur l'appareil), écoute normale / lente 🐢, écoute en arabe, ajout à « mes mots ». |
+| 🌐 **Traduction** | Anglais ⇄ arabe de n'importe quel texte, **hors-ligne** après un premier téléchargement (Google ML Kit, ~30 Mo). |
+| 📝 **Mes textes** | Coller n'importe quel texte anglais (chapitre de livre, article, chanson) → il devient une leçon avec audio et traduction. |
+| 🗂️ **Vocabulaire** | ~295 mots en 17 thèmes (+ un dictionnaire de ~290 mots pour le clic-traduction) (famille, nourriture, travail, voyage, santé…) avec exemples audio. |
+| 🃏 **Cartes (répétition espacée)** | Système Leitner : un mot revient après 1, 2, 4, 8, 16… jours, juste avant qu'on l'oublie. |
+| 🎯 **Exercices** | Quiz d'écoute, quiz de sens (EN→AR et AR→EN), **dictée** avec correction mot par mot, **remettre la phrase dans l'ordre**, **prononciation** avec reconnaissance vocale et score en %. |
+| 🔥 **Motivation** | Série de jours, points quotidiens, objectif journalier, plan de leçon guidé en 4 étapes. |
+
+---
+
+## Applications étudiées (exemples)
+
+| Application | Point fort retenu | Limite |
+|---|---|---|
+| **Beelinguapp** | Texte original et traduction côte à côte, audio « karaoké » synchronisé | Pas d'exercices de parole ni d'écriture |
+| **LingQ** | Toucher un mot pour le traduire et le sauvegarder ; importer ses propres textes | Payant, interface complexe |
+| **Readlang** | Traduction au clic sur n'importe quel texte | Surtout navigateur |
+| **Anki** | Répétition espacée très efficace | Pas de contenu, pas d'audio intégré |
+| **Duolingo** | Habitudes quotidiennes (séries, objectifs) | Peu de textes longs et réels |
+| **ELSA Speak** | Score de prononciation | Uniquement la prononciation |
+
+**Notre application combine** : textes bilingues + audio karaoké (Beelinguapp) · clic-traduction + import de textes (LingQ/Readlang) · cartes à répétition espacée (Anki) · série/objectif (Duolingo) · score de prononciation (ELSA), avec une **interface arabe** et des contenus **proches de la vie tunisienne**.
+
+## La meilleure méthode (intégrée dans l'application)
+
+1. **Input compréhensible** : lire/écouter des textes compris à ~90 %, avec quelques mots nouveaux → les niveaux A1–B2 et la traduction arabe le permettent.
+2. **Écoute lente puis normale** : ralentir l'audio (0.6×) réduit la surcharge cognitive au début ; on remonte à 1× quand le texte est compris.
+3. **Shadowing** (répéter juste après le locuteur) : c'est la technique la mieux soutenue par la recherche pour la prononciation et la fluidité, surtout **après** avoir compris le texte → bouton « pause » et 🎤.
+4. **Répétition espacée** pour le vocabulaire : réviser à intervalles croissants (1 j, 2 j, 4 j, 1 sem…).
+5. **Production active** : dictée et phrases à remettre dans l'ordre pour fixer l'orthographe et la grammaire.
+6. **Régularité** : 15–20 minutes par jour valent mieux que 3 heures une fois par semaine.
+
+**Routine quotidienne proposée (≈ 20 min)** : 🎧 écoute lente sans traduction → 📖 lecture avec traduction et mots sauvegardés → 🗣️ shadowing → 🚀 écoute à vitesse normale → 🃏 révision des cartes → ✍️ un exercice.
+
+---
+
+## Architecture technique
+
+- **Android natif (Kotlin)** : `app/src/main/java/tn/englishapp/MainActivity.kt`
+  - `TextToSpeech` Android : anglais US/UK et arabe, vitesse réglable, événements mot par mot (`onRangeStart`) pour le karaoké.
+  - **Google ML Kit Translate** : traduction EN⇄AR sur l'appareil (repli en ligne MyMemory si indisponible).
+  - `RecognizerIntent` : reconnaissance vocale pour l'exercice de prononciation.
+- **Interface** : HTML/CSS/JS dans `app/src/main/assets/www/` (servie via `WebViewAssetLoader`), RTL arabe, mode sombre.
+  - Contenu : `data/books.js` (textes) et `data/words.js` (vocabulaire + dictionnaire). Pour ajouter un livre, ajouter un objet dans `BOOKS`.
+- Données utilisateur (mots, progression) stockées localement sur le téléphone.
+
+## Compiler
+
+```bash
+./gradlew assembleRelease          # → app/build/outputs/apk/release/app-release.apk
+```
+Le workflow GitHub Actions `.github/workflows/build-apk.yml` compile aussi l'APK à chaque push (onglet *Actions* → artefact `EnglishArabi-apk`).
+
+Pour tester l'interface dans un navigateur : ouvrir `app/src/main/assets/www/index.html` (voix du navigateur si disponible).
+
+## Pistes d'amélioration
+
+- Enregistrer des voix humaines (MP3) pour les textes principaux.
+- Ajouter plus de livres (domaine public : Ésope, contes) et des niveaux B2/C1.
+- Notes en darija tunisienne pour les faux-amis et la prononciation.
+- Publication sur le Play Store avec une clé de signature dédiée.

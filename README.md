@@ -3,7 +3,16 @@
 Application Android (APK) pour **comprendre l'anglais** quand on parle **arabe** (pensée pour un utilisateur tunisien).
 Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par phrase, et audio à **vitesse réglable**.
 
-📥 **APK prêt à installer : [`apk/EnglishArabi.apk`](apk/EnglishArabi.apk)** (version 2.0, Android 8.0+, ~31 Mo)
+📥 **APK prêt à installer : [`apk/EnglishArabi.apk`](apk/EnglishArabi.apk)** (version 3.0, Android 8.0+, ~31 Mo)
+
+## Nouveautés de la version 3.0 — « Les bases » (الأساسيات)
+
+Nouvel onglet **الأساسيات** pour partir de zéro et améliorer la prononciation :
+
+- 🔤 **L'alphabet A–Z** : pour chaque lettre, son **nom** (A = « إيه », E = « إي », I = « آي »…) écrit en arabe et en API, le(s) **son(s)** qu'elle produit dans les mots expliqués en arabe, 3 mots d'exemple avec audio normal/lent, et une phrase à prononcer avec correction. Les voyelles et les sons absents de l'arabe (P, V) sont signalés. Écoute de tout l'alphabet, **quiz des lettres** (lettres faciles à confondre : A/E/I, B/P/V, G/J…), **jeu d'épellation** (on entend C-A-T, on écrit le mot) et **épeler son nom** (« How do you spell your name? »).
+- 🗣️ **Les sons difficiles pour les arabophones** (12 leçons) : P/B, V/F, ship/sheep, bed/bad, cup/cap, le « e magique » (cap/cape), TH (ث et ذ), CH/SH, W/V, les 3 prononciations de **-ed**, et les **lettres muettes**. Chaque leçon : explication en arabe + astuce, paires de mots à comparer (⇄), **quiz d'écoute** et **exercice de prononciation** avec reconnaissance vocale (« j'ai entendu *bin* au lieu de *pin* »).
+- 📘 **Grammaire de base** (12 leçons) : to be, have / there is, a / an / the, présent simple, présent continu, questions, passé simple, futur, can / must / should, in / on / at, possessifs, comparatifs. Chaque leçon : explication courte en arabe, formule, 8 exemples audio, **erreurs fréquentes des arabophones**, quiz à trous, et pratique orale des exemples dans le studio de prononciation.
+- 📅 Chaque jour du programme de 30 jours propose aussi une « **base du jour** » (lettres, son ou règle).
 
 ## Nouveautés de la version 2.0
 
@@ -28,6 +37,7 @@ Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par
 | 🗂️ **Vocabulaire** | ~295 mots en 17 thèmes (+ un dictionnaire de ~290 mots pour le clic-traduction) (famille, nourriture, travail, voyage, santé…) avec exemples audio. |
 | 🃏 **Cartes (répétition espacée)** | Système Leitner : un mot revient après 1, 2, 4, 8, 16… jours, juste avant qu'on l'oublie. |
 | 🎯 **Exercices** | Quiz d'écoute, quiz de sens (EN→AR et AR→EN), **dictée** avec correction mot par mot, **remettre la phrase dans l'ordre**, **prononciation** avec reconnaissance vocale et score en %. |
+| 🔤 **Les bases** | Alphabet (nom + son de chaque lettre, épellation), 12 leçons de sons difficiles (P/B, V/F, i/ee, th, -ed…), 12 leçons de grammaire de base, avec quiz et prononciation corrigée. |
 | 📅 **Programme 30 jours** | 30 textes progressifs, 8 tâches/jour (écoute lente, lecture, shadowing, écoute normale, révision de la veille, vocabulaire, dictée, lecture libre) = 2 h. |
 | 📚 **Mes livres** | Coller un texte, importer TXT/EPUB, 24 classiques gratuits à télécharger ; découpage automatique en chapitres. |
 | 🎤 **Studio de prononciation** | Écouter → s'enregistrer → comparer → correction mot par mot. |
@@ -69,7 +79,7 @@ Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par
   - `RecognizerIntent` : reconnaissance vocale pour l'exercice de prononciation.
   - Téléchargement des livres (Project Gutenberg + miroirs) côté natif, sélecteur de fichiers et autorisation micro pour l'enregistrement.
 - **Interface** : HTML/CSS/JS dans `app/src/main/assets/www/` (servie via `WebViewAssetLoader`), RTL arabe, mode sombre.
-  - Contenu : `data/books.js` (textes), `data/program1-3.js` (programme 30 jours), `data/classics.js` (catalogue de classiques) et `data/words.js` (vocabulaire + dictionnaire).
+  - Contenu : `data/books.js` (textes), `data/program1-3.js` (programme 30 jours), `data/classics.js` (catalogue de classiques), `data/basics.js` (alphabet, sons, grammaire) et `data/words.js` (vocabulaire + dictionnaire).
   - Les livres ajoutés par l'utilisateur sont stockés dans IndexedDB ; l'EPUB est lu avec JSZip (inclus, licence MIT).
 - Données utilisateur (mots, progression) stockées localement sur le téléphone.
 

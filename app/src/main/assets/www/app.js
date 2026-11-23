@@ -8,6 +8,14 @@
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  // Arabic text with English inside: keep each English run in its own left-to-right island.
+  const MIX_RE = /[A-Za-z0-9][A-Za-z0-9'’ ,.?!\/+\-→·]*[A-Za-z0-9.?!]|[A-Za-z0-9]/g;
+  const mixed = (t) => {
+    t = String(t); let out = '', last = 0, m;
+    MIX_RE.lastIndex = 0;
+    while ((m = MIX_RE.exec(t))) { out += esc(t.slice(last, m.index)) + `<bdi dir="ltr" class="en-in">${esc(m[0])}</bdi>`; last = m.index + m[0].length; }
+    return out + esc(t.slice(last));
+  };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const shuffle = (a) => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
@@ -30,7 +38,8 @@
     cards: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="14" height="15" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/></svg>',
     target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>',
     rec: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg>',
-    stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>'
+    stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>',
+    abc: '<svg viewBox="0 0 24 24"><text x="12" y="17.5" text-anchor="middle" font-size="15" font-weight="800" font-family="Roboto, Arial, sans-serif" fill="currentColor">Aa</text></svg>'
   };
 
   // ---------------------------------------------------------------- storage
@@ -379,6 +388,9 @@
   (window.BOOKS || []).forEach((b) => { BUILTIN[b.id] = Object.assign({ kind: 'builtin', chapters: [{ t: b.title, paragraphs: b.paragraphs }] }, b); });
   const PROGRAM = (window.PROGRAM || []).slice().sort((a, b) => a.day - b.day);
   PROGRAM.forEach((b) => { BUILTIN[b.id] = Object.assign({ kind: 'program', chapters: [{ t: b.title, paragraphs: b.paragraphs }] }, b); });
+  const chunk = (a, n) => { const out = []; for (let i = 0; i < a.length; i += n) out.push(a.slice(i, i + n)); return out; };
+  (window.GRAMMAR || []).forEach((g) => { BUILTIN['g_' + g.id] = { id: 'g_' + g.id, kind: 'lesson', title: g.title, titleAr: g.titleAr, level: g.level, emoji: g.emoji, color: '#5B6CD6', chapters: [{ t: g.title, paragraphs: chunk(g.ex.map((e) => [e[0], e[1]]), 4) }] }; });
+  if (window.ALPHABET) BUILTIN.abc = { id: 'abc', kind: 'lesson', title: 'The Alphabet', titleAr: 'الحروف الإنجليزية', level: 'A1', emoji: '🔤', color: '#0E7C66', chapters: [{ t: 'A–Z', paragraphs: chunk(window.ALPHABET.map((a) => [a.say, `${a.L} «${a.ar}»: ${a.w[0][0]} = ${a.w[0][1]}`]), 6) }] };
   const bookCache = {};
 
   const flatten = (chapter) => { const out = []; chapter.paragraphs.forEach((p, pi) => p.forEach((s) => out.push({ p: pi, en: s[0], ar: s[1], ref: s }))); return out; };
@@ -619,9 +631,10 @@
   // ---------------------------------------------------------------- router
   const TABS = [
     ['home', 'الرئيسية', I.home], ['program', '30 يومًا', I.cal], ['library', 'المكتبة', I.book],
-    ['mybooks', 'كتبي', I.mybooks], ['words', 'الكلمات', I.cards], ['practice', 'تمارين', I.target]
+    ['mybooks', 'كتبي', I.mybooks], ['basics', 'الأساسيات', I.abc], ['practice', 'تمارين', I.target]
   ];
   let stack = [{ name: 'home', params: {} }];
+  let abcToken = 0;
   const current = () => stack[stack.length - 1];
   function go(name, params) { leaveView(); stack.push({ name, params: params || {} }); render(true); }
   function goTab(name) { leaveView(); taskCtx = null; stack = [{ name, params: {} }]; render(true); }
@@ -631,7 +644,7 @@
     closeSheet();
     if (R) { stopReader(); R = null; }
     if (ST) { if (Rec.active) Rec.stop(); Object.values(ST.recs).forEach((u) => URL.revokeObjectURL(u)); ST = null; }
-    Speech.stop(); Rec.stopPlayback(); quiz = null;
+    Speech.stop(); Rec.stopPlayback(); quiz = null; abcToken++;
   }
   window.appBack = function () {
     if ($('.sheet')) { closeSheet(); return true; }
@@ -648,7 +661,7 @@
     app.className = '';
     $('#player-slot').innerHTML = '';
     app.innerHTML = view(v.params) || '';
-    const tabName = stack[0].name;
+    const tabName = ({ words: 'basics' })[stack[0].name] || stack[0].name;
     $('#nav').innerHTML = TABS.map(([n, label, icon]) => `<button class="${n === tabName ? 'on' : ''}" data-act="tab" data-t="${n}">${icon}<span>${label}</span></button>`).join('');
     if (scrollTop) window.scrollTo(0, 0);
     if (view.after) view.after(v.params);
@@ -703,6 +716,9 @@
         <button data-act="studioLast"><span class="em">🎤</span><b>استوديو النطق</b><span>سجّل صوتك وصحّح نطقك</span></button>
         <button data-act="go" data-v="translate"><span class="em">🌐</span><b>ترجمة</b><span>إنجليزي ⇄ عربي</span></button>
         <button data-act="go" data-v="dictation"><span class="em">✍️</span><b>إملاء</b><span>اسمع واكتب</span></button>
+        <button data-act="go" data-v="alphabet"><span class="em">🔤</span><b>الحروف A–Z</b><span>الاسم والصوت والتهجئة</span></button>
+        <button data-act="go" data-v="sounds"><span class="em">🗣️</span><b>الأصوات الصعبة</b><span>P/B، V/F، ship/sheep...</span></button>
+        <button data-act="go" data-v="grammar"><span class="em">📘</span><b>القواعد الأساسية</b><span>12 درسًا مع تمارين</span></button>
         <button data-act="go" data-v="method"><span class="em">💡</span><b>طريقة التعلّم</b><span>كيف تستعمل التطبيق</span></button>
       </div>
 
@@ -789,6 +805,8 @@
             <div class="progress"><i style="width:${dayDoneCount(d) / TASKS.length * 100}%"></i></div></div></div>
         <div style="margin-top:12px">${timeBar()}</div>
       </div>
+      ${(() => { const b = BASICS_PATH[(d - 1) % BASICS_PATH.length]; const ps = b[0] === 'sound' ? `data-v="sound" data-id="${b[1]}"` : b[0] === 'lesson' ? `data-v="lesson" data-id="${b[1]}"` : `data-v="${b[0]}"`;
+        return `<button class="bigcard" style="margin-top:12px" data-act="go" ${ps}><span class="em">📘</span><div class="grow"><b>أساس اليوم (10 د، ضمن وقت الكلمات)</b><small>${esc(b[2])}</small></div><span>←</span></button>`; })()}
       <div class="tasks">${TASKS.map((t, i) => {
         let extra = t.d;
         if (t.k === 'review') extra = `نصّ: <span class="en">${esc(prevTitle)}</span> — ${t.d}`;
@@ -1202,12 +1220,337 @@
     if (taskCtx && taskCtx.k === 'shadow' && n >= Math.ceil(ST.sents.length * 0.6)) ctxDone('shadow');
   }
 
+  // ---- Basics: alphabet, sounds, grammar
+  const ALPHA = window.ALPHABET || [];
+  const SOUNDS = window.SOUNDS || [];
+  const GRAMMAR = window.GRAMMAR || [];
+  let basicsProg = Object.assign({ alpha: null, spell: null, sounds: {}, speak: {}, grammar: {} }, store.get('basics', {}));
+  const saveBasics = () => store.set('basics', basicsProg);
+  const bestOf = (obj, k, v) => { obj[k] = Math.max(obj[k] || 0, v); saveBasics(); };
+  const letterText = (L) => L + '.';
+  const sayLetter = (L, rate) => Speech.speak(letterText(L), { rate: rate || Math.min(settings.rate, 0.85) });
+  const spellText = (w) => w.toUpperCase().replace(/[^A-Z]/g, '').split('').map(letterText).join(' ');
+  const hlLetter = (word, L) => esc(word).replace(new RegExp(L, 'gi'), (m) => `<b class="hlL">${m}</b>`);
+
+  // A short "basics of the day" suggestion for each day of the 30-day program.
+  const BASICS_PATH = (() => {
+    const out = [['alphabet', '', '🔤 الحروف الإنجليزية: الاسم والصوت']];
+    for (let i = 0; i < Math.max(SOUNDS.length, GRAMMAR.length); i++) {
+      if (SOUNDS[i]) out.push(['sound', SOUNDS[i].id, `${SOUNDS[i].emoji} نطق: ${SOUNDS[i].title}`]);
+      if (GRAMMAR[i]) out.push(['lesson', GRAMMAR[i].id, `${GRAMMAR[i].emoji} قواعد: ${GRAMMAR[i].titleAr}`]);
+    }
+    const fill = [['spelling', '', '✍️ لعبة التهجئة'], ['alphaquiz', '', '🎯 اختبار الحروف']];
+    for (let k = 0; out.length < 30; k++) out.push(fill[k % 2]);
+    return out;
+  })();
+
+  Views.basics = function () {
+    const bp = basicsProg;
+    const due = dueWords().length;
+    return `${topbar('الأساسيات', 'ابدأ من الصفر: الحروف، النطق، القواعد، الكلمات', { back: false })}
+    <div class="page">
+      <div class="card" style="background:var(--accent-soft)"><b>🧭 مسار المبتدئ</b>
+        <div class="small" style="margin-top:4px">1) تعلّم أسماء الحروف وأصواتها ← 2) تدرّب على الأصوات الصعبة على العرب ← 3) القواعد الأساسية ← 4) الكلمات اليومية. في برنامج 30 يومًا تجد «أساس اليوم» في صفحة كل يوم.</div></div>
+      <button class="bigcard" data-act="go" data-v="alphabet"><span class="em">🔤</span><div class="grow"><b>الحروف الإنجليزية A–Z</b><small>اسم كل حرف، صوته، أمثلة، تهجئة الأسماء</small></div>${bp.alpha != null ? `<span class="badge">${bp.alpha}%</span>` : ''}</button>
+      <button class="bigcard" data-act="go" data-v="sounds"><span class="em">🗣️</span><div class="grow"><b>النطق: الأصوات الصعبة</b><small>P/B، V/F، ship/sheep، th، نهاية ed، الحروف الصامتة...</small></div><span class="badge">${Object.keys(bp.sounds).length}/${SOUNDS.length}</span></button>
+      <button class="bigcard" data-act="go" data-v="grammar"><span class="em">📘</span><div class="grow"><b>القواعد الأساسية</b><small>to be، have، المضارع، الماضي، المستقبل، الأسئلة...</small></div><span class="badge">${Object.keys(bp.grammar).length}/${GRAMMAR.length}</span></button>
+      <button class="bigcard" data-act="go" data-v="words"><span class="em">🃏</span><div class="grow"><b>الكلمات اليومية</b><small>${ALL_WORDS.length} كلمة في ${(window.THEMES || []).length} موضوعًا${due ? ` · ${due} للمراجعة` : ''}</small></div></button>
+      <div class="card small">
+        <b>🎙️ كيف تتكلّم بثقة؟</b>
+        <ul class="method" style="margin:6px 0 0">
+          <li>استمع أولًا ثم قلّد: النطق يُتعلّم بالأذن قبل الفم.</li>
+          <li>ابدأ بطيئًا (0.5×) ثم ارفع السرعة. ردّد بصوت عالٍ دائمًا، لا في رأسك.</li>
+          <li>سجّل صوتك في استوديو النطق 🎤 وقارنه بالأصل: ستسمع الفرق بنفسك.</li>
+          <li>ركّز على الأصوات غير الموجودة في العربية: P و V والحروف المتحرّكة القصيرة.</li>
+          <li>الخطأ طبيعي: المهمّ أن يفهمك الآخرون، لا أن تكون لهجتك مثالية.</li>
+        </ul></div>
+    </div>`;
+  };
+
+  // ---- Alphabet
+  Views.alphabet = function () {
+    return `${topbar('الحروف الإنجليزية', '26 حرفًا · اضغط على أي حرف لتسمع اسمه وصوته')}
+    <div class="page">
+      <div class="card small">🔤 في الإنجليزية <b>26 حرفًا</b>: خمسة حروف متحرّكة (vowels) <b class="en">A E I O U</b> والباقي ساكنة (consonants).
+        لكل حرف <b>اسم</b> نستعمله في التهجئة (A = «إيه») و<b>صوت</b> داخل الكلمات (apple = «أَ»). انتبه خاصّة إلى <b class="en">E</b> = «إي» و<b class="en">I</b> = «آي» و<b class="en">A</b> = «إيه».</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <button class="btn grow" data-act="abcPlay">▶ كل الحروف</button>
+        <button class="btn secondary grow" data-act="go" data-v="alphaquiz">🎯 اختبار</button>
+        <button class="btn secondary grow" data-act="go" data-v="spelling">✍️ التهجئة</button>
+      </div>
+      ${speedChips(settings.rate, 'setRate')}
+      <div class="abc">${ALPHA.map((a, i) => `<button class="lt ${a.vowel ? 'vow' : ''} ${a.flag ? 'new' : ''}" id="lt${i}" data-act="letter" data-i="${i}"><b class="en">${a.L}${a.L.toLowerCase()}</b><span>${esc(a.ar)}</span></button>`).join('')}</div>
+      <div class="small muted center" style="margin:8px 0">🟩 حرف متحرّك · 🟧 صوت غير موجود في العربية</div>
+      <div class="card"><b>🔡 تهجئة اسمك أو أي كلمة</b>
+        <div class="row" style="gap:8px;margin-top:8px"><input class="input en grow" id="spellIn" placeholder="Omar" autocapitalize="off" autocomplete="off"><button class="btn" data-act="spellIt">🔊 تهجئة</button></div>
+        <div id="spellOut" class="en" style="margin-top:8px;font-weight:700;letter-spacing:1px"></div>
+        <div class="small muted" style="margin-top:6px">مفيد جدًّا في الهاتف أو الفندق أو المطار: <span class="en">How do you spell your name? — O-M-A-R.</span></div></div>
+      <button class="btn ghost block" data-act="go" data-v="studio" data-id="abc">🎤 تدرّب على النطق: <span class="en">A is for apple…</span></button>
+    </div>`;
+  };
+  function letterSheet(i) {
+    const a = ALPHA[i];
+    sheet(`<div class="row"><div class="lt-big en">${a.L}${a.L.toLowerCase()}</div>
+        <div class="grow"><div class="word-ar" style="margin:0">«${esc(a.ar)}»</div><div class="en muted">${esc(a.ipa)}</div>
+          ${a.vowel ? '<span class="level">VOWEL · حرف متحرّك</span>' : ''}</div>
+        <button class="sp-btn" data-act="sayLetter" data-l="${a.L}">${I.speaker}</button></div>
+      <div class="card" style="margin-top:10px"><b>🔈 صوته داخل الكلمات</b><div style="margin-top:4px">${mixed(a.snd)}</div></div>
+      <div class="wl">${a.w.map(([en, ar]) => `<div class="wi"><button class="sp-btn" data-act="say" data-text="${esc(en)}">${I.speaker}</button>
+        <div class="grow"><div class="en" style="font-size:20px">${hlLetter(en, a.L)}</div><div class="arw" style="color:var(--primary)">${esc(ar)}</div></div>
+        <button class="sp-btn" data-act="say" data-text="${esc(en)}" data-r="0.45">🐢</button></div>`).join('')}</div>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn secondary" data-act="say" data-text="${esc(a.say)}"><span class="en">🔊 ${esc(a.say)}</span></button>
+        <button class="btn" data-act="pronounce" data-text="${esc(a.say)}">${I.mic} قلها وصحّح</button></div>
+      <div class="row" style="justify-content:space-between;margin-top:12px">
+        <button class="btn ghost sm" data-act="letter" data-i="${(i + ALPHA.length - 1) % ALPHA.length}">→ ${ALPHA[(i + ALPHA.length - 1) % ALPHA.length].L}</button>
+        <button class="btn ghost sm" data-act="letter" data-i="${(i + 1) % ALPHA.length}">${ALPHA[(i + 1) % ALPHA.length].L} ←</button></div>`);
+    sayLetter(a.L);
+  }
+
+  // ---- Alphabet quiz: hear a letter name, pick it
+  const CONFUSE = ['AEI', 'BPVD', 'GJZ', 'MN', 'QUW', 'CSX', 'KQC', 'RLH', 'TD', 'OU', 'FV', 'YIW'];
+  let aq = null;
+  Views.alphaquiz = function () {
+    if (!aq) {
+      const letters = shuffle(ALPHA.map((a) => a.L)).slice(0, 12);
+      aq = { qs: letters.map((L) => {
+        const near = shuffle(Array.from(new Set(CONFUSE.filter((g) => g.includes(L)).join('').replace(L, '').split('').filter((x) => x && x !== L))));
+        const rest = shuffle(ALPHA.map((a) => a.L).filter((x) => x !== L && !near.includes(x)));
+        return { L, opts: shuffle([L].concat(near.slice(0, 2), rest).slice(0, 4)) };
+      }), i: 0, score: 0, ans: null };
+    }
+    if (aq.i >= aq.qs.length) {
+      const pct = Math.round(aq.score / aq.qs.length * 100);
+      return `${topbar('اختبار الحروف')}<div class="page"><div class="empty"><div class="em">${pct >= 80 ? '🏆' : '💪'}</div><h2>${aq.score} / ${aq.qs.length}</h2>
+        <p>${pct >= 80 ? 'ممتاز! تعرف أسماء الحروف.' : 'راجع الحروف التي أخطأت فيها واستمع إليها مرّة أخرى.'}</p>
+        <button class="btn" data-act="aqAgain">اختبار جديد</button></div></div>`;
+    }
+    const q = aq.qs[aq.i]; const a = ALPHA.find((x) => x.L === q.L);
+    return `${topbar('اختبار الحروف', 'اسمع اسم الحرف واختره')}
+    <div class="page">
+      <div class="counter">${aq.i + 1} / ${aq.qs.length} · ✔ ${aq.score}</div>
+      <div class="q-prompt"><button class="big-listen" data-act="sayLetter" data-l="${q.L}">${I.speaker}</button>
+        <div style="margin-top:8px"><button class="link" data-act="sayLetter" data-l="${q.L}" data-r="0.5">🐢 ببطء</button></div></div>
+      <div class="abc4">${q.opts.map((L) => {
+        let cls = ''; if (aq.ans) { if (L === q.L) cls = 'right'; else if (L === aq.ans) cls = 'wrong'; }
+        return `<button class="opt en ${cls}" style="font-size:34px;text-align:center" data-act="aqAnswer" data-l="${L}" ${aq.ans ? 'disabled' : ''}>${L}</button>`;
+      }).join('')}</div>
+      ${aq.ans ? `<div class="feedback ${aq.ans === q.L ? 'ok' : 'bad'}">${aq.ans === q.L ? '✅ صحيح!' : '❌'} الحرف <b class="en">${q.L}</b> = «${esc(a.ar)}» <span class="en">${esc(a.ipa)}</span></div>
+        <button class="btn block" style="margin-top:12px" data-act="aqNext">التالي ←</button>` : ''}
+    </div>`;
+  };
+  Views.alphaquiz.after = function () {
+    if (!aq || aq.i >= aq.qs.length || aq.ans) return;
+    const st = aq, i = st.i;
+    setTimeout(() => { if (aq === st && st.i === i && !st.ans) sayLetter(st.qs[i].L); }, 250);
+  };
+
+  // ---- Spelling game: hear the letters, type the word
+  let sp = null;
+  Views.spelling = function () {
+    if (!sp) { const pool = shuffle(window.SPELL_WORDS || []); sp = { pool, k: 0, w: pool[0], res: null, n: 0, ok: 0 }; }
+    const [w, ar] = sp.w;
+    return `${topbar('التهجئة', 'اسمع الحروف واكتب الكلمة')}
+    <div class="page">
+      <div class="counter">✔ ${sp.ok} / ${sp.n}</div>
+      <div class="q-prompt"><button class="big-listen" data-act="spellPlay">${I.speaker}</button>
+        <div class="small muted" style="margin-top:8px">ستسمع الكلمة حرفًا حرفًا: <span class="en">C - A - T</span></div></div>
+      ${speedChips(settings.rate, 'setRate')}
+      <input class="input en" id="spIn" style="margin-top:14px;font-size:22px;text-align:center" placeholder="..." autocapitalize="off" autocomplete="off" spellcheck="false" ${sp.res ? 'disabled' : ''} value="${esc(sp.res ? sp.res.input : '')}">
+      ${sp.res ? `<div class="feedback ${sp.res.ok ? 'ok' : 'bad'}">${sp.res.ok ? '✅ صحيح!' : '❌ الكلمة الصحيحة:'} <b class="en">${esc(w)}</b> = ${esc(ar)}</div>
+        <div class="card en center" style="margin-top:10px;font-size:20px;letter-spacing:2px">${w.toUpperCase().split('').join(' - ')}</div>
+        <div class="row" style="gap:8px"><button class="btn ghost grow" data-act="say" data-text="${esc(w)}">🔊 الكلمة</button><button class="btn grow" data-act="spNext">كلمة أخرى ←</button></div>`
+      : `<div class="row" style="gap:8px;margin-top:12px"><button class="btn grow" data-act="spCheck">تحقّق</button><button class="btn ghost" data-act="say" data-text="${esc(w)}">💡 اسمع الكلمة</button></div>`}
+    </div>`;
+  };
+  Views.spelling.after = function () {
+    if (!sp || sp.res) return;
+    const st = sp, w = st.w;
+    setTimeout(() => { if (sp === st && st.w === w && !st.res && current().name === 'spelling') A.spellPlay(); }, 300);
+  };
+
+  // ---- Difficult sounds
+  Views.sounds = function () {
+    return `${topbar('النطق: الأصوات الصعبة', 'الأصوات التي يخلط بينها المتكلّمون بالعربية')}
+    <div class="page">
+      <div class="card small">🎧 في كل درس: شرح بالعربية، أزواج كلمات يتغيّر معناها بتغيّر صوت واحد، اختبار استماع، وتمرين نطق مع تصحيح.</div>
+      ${SOUNDS.map((s) => {
+        const ex = s.kind === 'pairs' ? `${s.pairs[0][0]} / ${s.pairs[0][1]}` : s.kind === 'groups' ? s.groups.map((g) => g.words[0][0]).join(' · ') : s.words.slice(0, 3).map((w) => w[0]).join(' · ');
+        const best = basicsProg.sounds[s.id];
+        return `<button class="bigcard" data-act="go" data-v="sound" data-id="${s.id}"><span class="em">${s.emoji}</span>
+          <div class="grow"><b class="en">${esc(s.title)}</b> <span class="small muted">${esc(s.titleAr)}</span><small class="en">${esc(ex)}</small></div>
+          ${best != null ? `<span class="badge ${best >= 80 ? 'good' : ''}">${best}%</span>` : ''}</button>`;
+      }).join('')}
+    </div>`;
+  };
+
+  Views.sound = function (p) {
+    const s = SOUNDS.find((x) => x.id === p.id); if (!s) return Views.sounds();
+    let body = '';
+    if (s.kind === 'pairs') {
+      body = `<div class="pairs">${s.pairs.map(([a, b, aa, bb]) => `<div class="pair">
+        <button class="pw" data-act="say" data-text="${esc(a)}"><b class="en">${esc(a)}</b><span>${esc(aa)}</span></button>
+        <button class="vs" data-act="sayPair" data-a="${esc(a)}" data-b="${esc(b)}" aria-label="قارن">⇄</button>
+        <button class="pw" data-act="say" data-text="${esc(b)}"><b class="en">${esc(b)}</b><span>${esc(bb)}</span></button></div>`).join('')}</div>`;
+    } else if (s.kind === 'groups') {
+      body = `<div class="groups">${s.groups.map((g) => `<div class="group"><div class="glabel en">${esc(g.label)}</div>
+        ${g.words.map(([w, ar]) => `<button class="gw" data-act="say" data-text="${esc(w)}"><b class="en">${esc(w)}</b><span>${esc(ar)}</span></button>`).join('')}</div>`).join('')}</div>`;
+    } else {
+      body = `<div class="wl">${s.words.map(([w, ar, note]) => `<div class="wi"><button class="sp-btn" data-act="say" data-text="${esc(w)}">${I.speaker}</button>
+        <div class="grow"><b class="en" style="font-size:19px">${esc(w)}</b> <span class="arw" style="color:var(--primary)">${esc(ar)}</span><div class="small muted">${mixed(note)}</div></div>
+        <button class="sp-btn" data-act="say" data-text="${esc(w)}" data-r="0.45">🐢</button></div>`).join('')}</div>`;
+    }
+    return `${topbar(`<span class="en">${esc(s.title)}</span>`, esc(s.titleAr))}
+    <div class="page">
+      <div class="card"><div>${mixed(s.explain)}</div><div class="tipbox">💡 ${mixed(s.tip)}</div></div>
+      <div class="row" style="gap:8px;margin-bottom:10px">
+        ${s.kind !== 'list' ? `<button class="btn grow" data-act="go" data-v="soundquiz" data-id="${s.id}">🎧 اسمع واختر</button>` : ''}
+        <button class="btn secondary grow" data-act="go" data-v="soundspeak" data-id="${s.id}">${I.mic} انطق وصحّح</button>
+      </div>
+      ${speedChips(settings.rate, 'setRate')}
+      <div style="margin-top:12px">${body}</div>
+      ${s.kind === 'pairs' ? '<p class="small muted center">اضغط على ⇄ لتسمع الكلمتين وراء بعضهما وتلاحظ الفرق.</p>' : ''}
+    </div>`;
+  };
+
+  let sq = null;
+  Views.soundquiz = function (p) {
+    const s = SOUNDS.find((x) => x.id === p.id);
+    if (!sq || sq.id !== s.id) {
+      let qs;
+      if (s.kind === 'pairs') qs = shuffle(s.pairs.flatMap((pr) => [0, 1].map((side) => ({ word: pr[side], opts: [[pr[0], pr[2]], [pr[1], pr[3]]] })))).slice(0, 10);
+      else qs = shuffle(s.groups.flatMap((g) => g.words.map(([w, ar]) => ({ word: w, ar, label: g.label })))).slice(0, 10)
+        .map((q) => Object.assign(q, { opts: s.groups.map((g) => [g.label, g.words[0][0]]) }));
+      sq = { id: s.id, qs, i: 0, score: 0, ans: null };
+    }
+    if (sq.i >= sq.qs.length) {
+      const pct = Math.round(sq.score / sq.qs.length * 100);
+      return `${topbar('اختبار الاستماع', esc(s.title))}<div class="page"><div class="empty"><div class="em">${pct >= 80 ? '🏆' : '💪'}</div><h2>${sq.score} / ${sq.qs.length}</h2>
+        <p>${pct >= 80 ? 'أذنك تميّز هذا الصوت جيّدًا!' : 'استمع إلى الأزواج مرّة أخرى ببطء، ثم أعد الاختبار.'}</p>
+        <div class="row" style="gap:8px;justify-content:center"><button class="btn" data-act="sqAgain">أعد</button><button class="btn secondary" data-act="go" data-v="soundspeak" data-id="${s.id}">${I.mic} تمرين النطق</button></div></div></div>`;
+    }
+    const q = sq.qs[sq.i];
+    const correct = s.kind === 'pairs' ? q.word : q.label;
+    return `${topbar('اختبار الاستماع', esc(s.title))}
+    <div class="page">
+      <div class="counter">${sq.i + 1} / ${sq.qs.length} · ✔ ${sq.score}</div>
+      <div class="q-prompt"><button class="big-listen" data-act="say" data-text="${esc(q.word)}">${I.speaker}</button>
+        <div style="margin-top:8px"><button class="link" data-act="say" data-text="${esc(q.word)}" data-r="0.45">🐢 ببطء</button></div>
+        <p class="muted small">${s.kind === 'pairs' ? 'أيّ كلمة سمعت؟' : 'كيف تُنطق نهاية هذا الفعل؟'}</p></div>
+      <div class="options">${q.opts.map(([w, sub]) => {
+        let cls = ''; if (sq.ans) { if (w === correct) cls = 'right'; else if (w === sq.ans) cls = 'wrong'; }
+        return `<button class="opt ${cls}" data-act="sqAnswer" data-w="${esc(w)}" ${sq.ans ? 'disabled' : ''}><span class="en" style="font-size:22px">${esc(w)}</span><div class="small muted">${esc(sub)}</div></button>`;
+      }).join('')}</div>
+      ${sq.ans ? `<div class="feedback ${sq.ans === correct ? 'ok' : 'bad'}">${sq.ans === correct ? '✅ صحيح!' : `❌ الكلمة كانت <b class="en">${esc(q.word)}</b>`}</div>
+        <div class="row" style="gap:8px;margin-top:10px">${s.kind === 'pairs' ? `<button class="btn ghost grow" data-act="sayPair" data-a="${esc(q.opts[0][0])}" data-b="${esc(q.opts[1][0])}">⇄ قارن</button>` : ''}<button class="btn grow" data-act="sqNext">التالي ←</button></div>` : ''}
+    </div>`;
+  };
+  Views.soundquiz.after = function () {
+    if (!sq || sq.i >= sq.qs.length || sq.ans) return;
+    const st = sq, i = st.i;
+    setTimeout(() => { if (sq === st && st.i === i && !st.ans) say(st.qs[i].word); }, 250);
+  };
+
+  let ss = null;
+  Views.soundspeak = function (p) {
+    const s = SOUNDS.find((x) => x.id === p.id);
+    if (!ss || ss.id !== s.id) {
+      let items;
+      if (s.kind === 'pairs') items = s.pairs.flatMap(([a, b, aa, bb]) => [{ w: a, ar: aa, other: b }, { w: b, ar: bb, other: a }]);
+      else if (s.kind === 'groups') items = s.groups.flatMap((g) => g.words.map(([w, ar]) => ({ w, ar, note: g.label })));
+      else items = s.words.map(([w, ar, note]) => ({ w, ar, note }));
+      ss = { id: s.id, items: shuffle(items), k: 0, res: null, n: 0, ok: 0 };
+    }
+    const it = ss.items[ss.k];
+    return `${topbar('تمرين النطق', esc(s.title))}
+    <div class="page">
+      <div class="counter">✔ ${ss.ok} / ${ss.n}</div>
+      <div class="card center studio-card">
+        <div class="en" style="font-size:40px;font-weight:800">${esc(it.w)}</div>
+        <div class="arw" style="color:var(--primary);font-size:18px">${esc(it.ar)}</div>
+        ${it.note ? `<div class="small muted en">${esc(it.note)}</div>` : ''}
+        ${it.other ? `<div class="small muted">لا تخلطها مع: <span class="en">${esc(it.other)}</span></div>` : ''}
+      </div>
+      ${speedChips(settings.rate, 'setRate')}
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="btn secondary grow" data-act="say" data-text="${esc(it.w)}">${I.speaker} 1. استمع</button>
+        <button class="btn secondary" data-act="say" data-text="${esc(it.w)}" data-r="0.45">🐢</button>
+        <button class="btn grow" data-act="ssCheck">${I.mic} 2. قلها</button>
+      </div>
+      ${ss.res ? `<div class="feedback ${ss.res.ok ? 'ok' : 'bad'}" style="margin-top:12px">${ss.res.msg}</div>
+        ${ss.res.ok ? '' : `<div class="tipbox">💡 ${mixed(s.tip)}</div>`}` : ''}
+      <button class="btn ghost block" style="margin-top:12px" data-act="ssNext">الكلمة التالية ←</button>
+    </div>`;
+  };
+
+  // ---- Grammar
+  Views.grammar = function () {
+    return `${topbar('القواعد الأساسية', `${GRAMMAR.length} درسًا قصيرًا مع أمثلة صوتية وتمارين`)}
+    <div class="page">
+      <div class="card small">📘 كل درس: شرح مختصر بالعربية، قاعدة، أمثلة تسمعها بأي سرعة، أخطاء شائعة عند العرب، اختبار، وتمرين نطق للأمثلة.</div>
+      ${GRAMMAR.map((g, i) => {
+        const best = basicsProg.grammar[g.id];
+        return `<button class="bigcard" data-act="go" data-v="lesson" data-id="${g.id}"><span class="em">${g.emoji}</span>
+          <div class="grow"><b>${i + 1}. ${esc(g.titleAr)}</b><small class="en">${esc(g.title)}</small></div>
+          <span class="level">${g.level}</span>${best != null ? `<span class="badge ${best >= 80 ? 'good' : ''}">${best}%</span>` : ''}</button>`;
+      }).join('')}
+    </div>`;
+  };
+
+  Views.lesson = function (p) {
+    const g = GRAMMAR.find((x) => x.id === p.id); if (!g) return Views.grammar();
+    return `${topbar(`${g.emoji} ${esc(g.titleAr)}`, `<span class="en">${esc(g.title)}</span> · ${g.level}`)}
+    <div class="page">
+      <div class="card">${g.explain.map((t) => `<p style="margin:0 0 8px">${mixed(t)}</p>`).join('')}</div>
+      <div class="formula" dir="auto">${esc(g.formula)}</div>
+      <div class="row" style="gap:8px;margin:12px 0">
+        <button class="btn grow" data-act="openCh" data-id="g_${g.id}" data-ch="0">▶ استمع</button>
+        <button class="btn secondary grow" data-act="go" data-v="studio" data-id="g_${g.id}">${I.mic} انطق</button>
+        <button class="btn accent grow" data-act="go" data-v="gquiz" data-id="${g.id}">🧩 اختبار</button>
+      </div>
+      <div class="section-title">أمثلة</div>
+      <div class="wl">${g.ex.map(([en, ar]) => `<div class="wi"><button class="sp-btn" data-act="say" data-text="${esc(en)}">${I.speaker}</button>
+        <div class="grow"><div class="en" style="font-size:17px">${esc(en)}</div><div class="small muted">${esc(ar)}</div></div>
+        <button class="sp-btn" data-act="pronounce" data-text="${esc(en)}" aria-label="انطق">${I.mic}</button></div>`).join('')}</div>
+      <div class="section-title">⚠️ أخطاء شائعة</div>
+      <div class="wl">${g.mist.map(([w, r, n]) => `<div class="wi"><div class="grow">
+        <div class="en"><s class="wrongtxt">${esc(w)}</s> → <b class="righttxt">${esc(r)}</b></div><div class="small muted">${mixed(n)}</div></div>
+        <button class="sp-btn" data-act="say" data-text="${esc(r)}">${I.speaker}</button></div>`).join('')}</div>
+    </div>`;
+  };
+
+  let gq = null;
+  const fillBlank = (q, opt) => (opt === '—' ? q.replace(/___ ?/, '') : q.replace('___', opt)).replace(/^./, (c) => c.toUpperCase());
+  Views.gquiz = function (p) {
+    const g = GRAMMAR.find((x) => x.id === p.id);
+    if (!gq || gq.id !== g.id) gq = { id: g.id, qs: shuffle(g.quiz), i: 0, score: 0, ans: null };
+    if (gq.i >= gq.qs.length) {
+      const pct = Math.round(gq.score / gq.qs.length * 100);
+      return `${topbar('اختبار', esc(g.titleAr))}<div class="page"><div class="empty"><div class="em">${pct >= 80 ? '🏆' : '💪'}</div><h2>${gq.score} / ${gq.qs.length}</h2>
+        <p>${pct >= 80 ? 'ممتاز! فهمت القاعدة.' : 'راجع الشرح والأمثلة ثم أعد الاختبار.'}</p>
+        <div class="row" style="gap:8px;justify-content:center"><button class="btn" data-act="gqAgain">أعد</button><button class="btn secondary" data-act="go" data-v="studio" data-id="g_${g.id}">${I.mic} انطق الأمثلة</button></div></div></div>`;
+    }
+    const [q, opts, ans, why] = gq.qs[gq.i];
+    const full = fillBlank(q, opts[ans]);
+    return `${topbar('اختبار', esc(g.titleAr))}
+    <div class="page">
+      <div class="counter">${gq.i + 1} / ${gq.qs.length} · ✔ ${gq.score}</div>
+      <div class="card en center" style="font-size:22px;padding:22px 12px">${esc(q).replace('___', '<span class="blank">____</span>')}</div>
+      <div class="options">${opts.map((o, k) => {
+        let cls = ''; if (gq.ans != null) { if (k === ans) cls = 'right'; else if (k === gq.ans) cls = 'wrong'; }
+        return `<button class="opt en ${cls}" data-act="gqAnswer" data-k="${k}" ${gq.ans != null ? 'disabled' : ''}>${esc(o)}</button>`;
+      }).join('')}</div>
+      ${gq.ans != null ? `<div class="feedback ${gq.ans === ans ? 'ok' : 'bad'}">${gq.ans === ans ? '✅ صحيح!' : '❌ الجواب الصحيح:'} <span class="en">${esc(full)}</span><div class="small" style="margin-top:4px">${mixed(why)}</div></div>
+        <div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost grow" data-act="say" data-text="${esc(full)}">🔊 استمع</button><button class="btn grow" data-act="gqNext">التالي ←</button></div>` : ''}
+    </div>`;
+  };
+
   // ---- Words
   let wordsTab = 'themes';
   Views.words = function () {
     const due = dueWords().length;
     const mine = Object.values(saved).sort((a, b) => b.added - a.added);
-    const head = `${topbar('الكلمات', `${ALL_WORDS.length} كلمة في ${window.THEMES.length} موضوعًا`, { back: false })}
+    const head = `${topbar('الكلمات', `${ALL_WORDS.length} كلمة في ${window.THEMES.length} موضوعًا`, { back: stack.length > 1 ? undefined : false })}
     <div class="page">
       <div class="card row" style="background:var(--primary-soft)">
         <div class="grow"><b>🃏 المراجعة الذكية</b><div class="small muted">${due ? `${due} كلمة للمراجعة الآن` : (mine.length ? 'لا مراجعة الآن، عُد لاحقًا 👌' : 'احفظ كلمات ⭐ لتبدأ المراجعة')}</div></div>
@@ -1377,7 +1720,11 @@
       : `<div class="row" style="margin-top:12px;gap:8px"><button class="btn grow" data-act="dictCheck">تحقّق</button><button class="btn ghost" data-act="dictHint">💡 تلميح</button></div>`}
     </div>`;
   };
-  Views.dictation.after = function () { if (dict && !dict.result) setTimeout(() => say(dict.s.en), 300); };
+  Views.dictation.after = function () {
+    if (!dict || dict.result) return;
+    const st = dict, s0 = st.s;
+    setTimeout(() => { if (dict === st && st.s === s0 && !st.result && current().name === 'dictation') say(s0.en); }, 300);
+  };
 
   // ---- Sentence builder
   let bld = null;
@@ -1485,7 +1832,7 @@
         <div class="setting"><div class="grow"><b>إعادة البرنامج من البداية</b><div class="small muted">يحذف تقدّم برنامج 30 يومًا فقط</div></div><button class="btn ghost" data-act="resetProg">إعادة</button></div>
         <div class="setting"><div class="grow"><b>إعادة ضبط كل التقدّم</b><div class="small muted">يحذف الكلمات المحفوظة والتقدّم (لا يحذف كتبك)</div></div><button class="btn danger" data-act="reset">حذف</button></div>
       </div>
-      <p class="center small muted">إنجليزي بالعربي · الإصدار 2.0</p>
+      <p class="center small muted">إنجليزي بالعربي · الإصدار 3.0</p>
     </div>`;
   };
 
@@ -1497,6 +1844,12 @@
       <div class="card"><b>📅 برنامج 30 يومًا · ساعتان يوميًا</b>
         <ol class="method">${TASKS.map((t) => `<li><b>${t.em} ${t.t} (${t.min} د):</b> ${t.d}</li>`).join('')}</ol>
         <div class="small muted">كل يوم نص جديد بمستوى أعلى قليلًا (من A1 إلى B2)، مع مراجعة نص الأمس.</div></div>
+      <div class="card"><b>🔤 إذا كنت مبتدئًا تمامًا</b>
+        <ol class="method">
+          <li>ابدأ بقسم <b>الأساسيات</b>: الحروف الإنجليزية (اسم كل حرف وصوته) ولعبة التهجئة.</li>
+          <li>تدرّب على الأصوات غير الموجودة في العربية: P و V والحروف المتحرّكة القصيرة (ship/sheep، bed/bad، cup/cap).</li>
+          <li>تعلّم درسًا واحدًا من القواعد الأساسية كل يومين، وانطق أمثلته بصوت عالٍ.</li>
+        </ol></div>
       <div class="card"><b>🎤 استوديو النطق</b>
         <ol class="method">
           <li>استمع للجملة 3 مرات (ببطء ثم بالسرعة العادية).</li>
@@ -1526,6 +1879,11 @@
       if (v === 'dictation') dict = null;
       if (v === 'builder') bld = null;
       if (v === 'speak') spk = null;
+      if (v === 'alphaquiz') aq = null;
+      if (v === 'spelling') sp = null;
+      if (v === 'soundquiz') sq = null;
+      if (v === 'soundspeak') ss = null;
+      if (v === 'gquiz') gq = null;
       go(v, d);
     },
     openInfo: (el) => {
@@ -1726,6 +2084,91 @@
       render(); say(ST.sents[ST.i].en);
     },
     stRestart: () => { closeSheet(); ST.i = 0; ST.res = null; render(); },
+
+    // basics
+    letter: (el) => letterSheet(+el.dataset.i),
+    sayLetter: (el) => sayLetter(el.dataset.l, el.dataset.r ? +el.dataset.r : undefined),
+    pronounce: (el) => { closeSheet(); pronounceSheet(el.dataset.text); },
+    abcPlay: async () => {
+      const token = ++abcToken;
+      for (let i = 0; i < ALPHA.length; i++) {
+        if (token !== abcToken || current().name !== 'alphabet') return;
+        $$('.lt.on').forEach((e) => e.classList.remove('on'));
+        const t = $('#lt' + i); if (t) { t.classList.add('on'); t.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+        const r = await Speech.speak(letterText(ALPHA[i].L), { rate: settings.rate });
+        if (r === 'stopped') { $$('.lt.on').forEach((e) => e.classList.remove('on')); return; }
+        await sleep(250);
+      }
+      $$('.lt.on').forEach((e) => e.classList.remove('on'));
+    },
+    spellIt: () => {
+      const v = ($('#spellIn').value || '').trim(); if (!v) return;
+      const letters = v.toUpperCase().replace(/[^A-Z ]/g, '');
+      $('#spellOut').textContent = letters.split(' ').map((w) => w.split('').join('-')).join('   ');
+      Speech.speak(spellText(letters), { rate: Math.min(settings.rate, 0.8) });
+    },
+    aqAnswer: (el) => { const q = aq.qs[aq.i]; aq.ans = el.dataset.l; if (aq.ans === q.L) { aq.score++; addPoints(1); } render(); sayLetter(q.L); },
+    aqNext: () => {
+      aq.i++; aq.ans = null;
+      if (aq.i >= aq.qs.length) { basicsProg.alpha = Math.max(basicsProg.alpha || 0, Math.round(aq.score / aq.qs.length * 100)); saveBasics(); }
+      render();
+    },
+    aqAgain: () => { aq = null; render(); },
+    spellPlay: () => Speech.speak(spellText(sp.w[0]), { rate: Math.min(settings.rate, 0.8) }),
+    spCheck: () => {
+      const input = ($('#spIn').value || '').trim(); if (!input) { toast('اكتب الكلمة أولًا'); return; }
+      const ok = input.toLowerCase() === sp.w[0].toLowerCase();
+      sp.res = { ok, input }; sp.n++; if (ok) { sp.ok++; addPoints(2); }
+      basicsProg.spell = Math.round(sp.ok / sp.n * 100); saveBasics();
+      render(); say(sp.w[0]);
+    },
+    spNext: () => { sp.k = (sp.k + 1) % sp.pool.length; sp.w = sp.pool[sp.k]; sp.res = null; render(); },
+    sayPair: async (el) => {
+      const r1 = await say(el.dataset.a, Math.min(settings.rate, 0.8)); if (r1 === 'stopped') return;
+      await sleep(450); say(el.dataset.b, Math.min(settings.rate, 0.8));
+    },
+    sqAnswer: (el) => {
+      const q = sq.qs[sq.i]; const s = SOUNDS.find((x) => x.id === sq.id);
+      const correct = s.kind === 'pairs' ? q.word : q.label;
+      sq.ans = el.dataset.w; if (sq.ans === correct) { sq.score++; addPoints(1); }
+      render();
+    },
+    sqNext: () => {
+      sq.i++; sq.ans = null;
+      if (sq.i >= sq.qs.length) bestOf(basicsProg.sounds, sq.id, Math.round(sq.score / sq.qs.length * 100));
+      render();
+    },
+    sqAgain: () => { const id = sq.id; sq = null; replaceTop({ id }); },
+    ssCheck: async () => {
+      const st = ss; const it = st.items[st.k];
+      Speech.stop();
+      const alts = await listenSpeech();
+      if (!alts) { toast('لم أسمع شيئًا. حاول مرة أخرى.'); return; }
+      if (ss !== st) return;
+      const heard = alts.map((a) => normWords(a));
+      const target = normWords(it.w).join(' ');
+      const ok = heard.some((ws) => ws.join(' ') === target || ws.includes(target));
+      const said = alts[0];
+      let msg;
+      if (ok) msg = `✅ ممتاز! سمعتُ: <b class="en">${esc(said)}</b>`;
+      else if (it.other && heard.some((ws) => ws.includes(normWords(it.other).join(' ')))) msg = `❌ سمعتُ <b class="en">${esc(it.other)}</b> بدل <b class="en">${esc(it.w)}</b>. استمع ببطء وأعد المحاولة.`;
+      else msg = `❌ سمعتُ: <b class="en">${esc(said)}</b>. استمع ببطء وأعد المحاولة.`;
+      st.res = { ok, msg }; st.n++; if (ok) { st.ok++; addPoints(2); }
+      bestOf(basicsProg.speak, st.id, Math.round(st.ok / st.n * 100));
+      render();
+    },
+    ssNext: () => { ss.k = (ss.k + 1) % ss.items.length; ss.res = null; render(); say(ss.items[ss.k].w); },
+    gqAnswer: (el) => {
+      const k = +el.dataset.k; const q = gq.qs[gq.i];
+      gq.ans = k; if (k === q[2]) { gq.score++; addPoints(2); }
+      render(); say(fillBlank(q[0], q[1][q[2]]));
+    },
+    gqNext: () => {
+      gq.i++; gq.ans = null;
+      if (gq.i >= gq.qs.length) bestOf(basicsProg.grammar, gq.id, Math.round(gq.score / gq.qs.length * 100));
+      render();
+    },
+    gqAgain: () => { const id = gq.id; gq = null; replaceTop({ id }); },
 
     // theme words
     listenAll: async (el) => {

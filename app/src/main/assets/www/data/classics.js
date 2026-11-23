@@ -1,0 +1,27 @@
+// Free public-domain books from Project Gutenberg (gid = Gutenberg ebook number).
+window.CLASSICS = [
+  { gid: 14838, level: "A2", emoji: "🐰", title: "The Tale of Peter Rabbit", titleAr: "حكاية الأرنب بيتر", author: "Beatrix Potter", desc: "قصة قصيرة جدًا وسهلة، مثالية للبداية." },
+  { gid: 21, level: "A2", emoji: "🦊", title: "Aesop's Fables", titleAr: "حكايات إيسوب", author: "Aesop", desc: "أكثر من 300 حكاية قصيرة مع عبرة. فقرات قصيرة ومفردات بسيطة." },
+  { gid: 902, level: "B1", emoji: "🌹", title: "The Happy Prince and Other Tales", titleAr: "الأمير السعيد وحكايات أخرى", author: "Oscar Wilde", desc: "خمس حكايات جميلة ومؤثّرة: الأمير السعيد، العندليب والوردة، العملاق الأناني..." },
+  { gid: 11, level: "B1", emoji: "🐇", title: "Alice's Adventures in Wonderland", titleAr: "أليس في بلاد العجائب", author: "Lewis Carroll", desc: "مغامرات أليس في عالم غريب ومضحك." },
+  { gid: 16, level: "B1", emoji: "🧚", title: "Peter Pan", titleAr: "بيتر بان", author: "J. M. Barrie", desc: "الطفل الذي لا يكبر أبدًا، وأرض اللامكان." },
+  { gid: 55, level: "B1", emoji: "🌪️", title: "The Wonderful Wizard of Oz", titleAr: "ساحر أوز العجيب", author: "L. Frank Baum", desc: "رحلة دوروثي في أرض أوز. لغة واضحة وجمل قصيرة." },
+  { gid: 2591, level: "B1", emoji: "🏰", title: "Grimms' Fairy Tales", titleAr: "حكايات الأخوين غريم", author: "Brothers Grimm", desc: "سندريلا، هانسل وغريتل، ذات الرداء الأحمر... حكايات مشهورة." },
+  { gid: 128, level: "B1", emoji: "🧞", title: "The Arabian Nights Entertainments", titleAr: "ألف ليلة وليلة", author: "Andrew Lang", desc: "حكايات ألف ليلة وليلة بالإنجليزية: علاء الدين، علي بابا، السندباد..." },
+  { gid: 236, level: "B1", emoji: "🐻", title: "The Jungle Book", titleAr: "كتاب الأدغال", author: "Rudyard Kipling", desc: "ماوكلي والذئاب والدبّ بالو." },
+  { gid: 1448, level: "B1", emoji: "⛰️", title: "Heidi", titleAr: "هايدي", author: "Johanna Spyri", desc: "هايدي وجدّها في جبال الألب." },
+  { gid: 271, level: "B1", emoji: "🐎", title: "Black Beauty", titleAr: "الجمال الأسود", author: "Anna Sewell", desc: "قصة حصان يرويها بنفسه." },
+  { gid: 113, level: "B1", emoji: "🌷", title: "The Secret Garden", titleAr: "الحديقة السرّية", author: "Frances Hodgson Burnett", desc: "فتاة تكتشف حديقة مغلقة منذ سنوات." },
+  { gid: 45, level: "B2", emoji: "👧", title: "Anne of Green Gables", titleAr: "آن في المرتفعات الخضراء", author: "L. M. Montgomery", desc: "آن، اليتيمة الذكية والحالمة." },
+  { gid: 74, level: "B2", emoji: "🛶", title: "The Adventures of Tom Sawyer", titleAr: "مغامرات توم سوير", author: "Mark Twain", desc: "مغامرات صبيّ شقيّ على ضفاف نهر المسيسيبي." },
+  { gid: 120, level: "B2", emoji: "🏴‍☠️", title: "Treasure Island", titleAr: "جزيرة الكنز", author: "R. L. Stevenson", desc: "قراصنة وخريطة كنز ومغامرة في البحر." },
+  { gid: 103, level: "B2", emoji: "🌍", title: "Around the World in Eighty Days", titleAr: "حول العالم في ثمانين يومًا", author: "Jules Verne", desc: "رهان مجنون للدوران حول العالم." },
+  { gid: 521, level: "B2", emoji: "🏝️", title: "Robinson Crusoe", titleAr: "روبنسون كروزو", author: "Daniel Defoe", desc: "رجل وحيد على جزيرة مهجورة." },
+  { gid: 215, level: "B2", emoji: "🐺", title: "The Call of the Wild", titleAr: "نداء البرّية", author: "Jack London", desc: "الكلب باك في ثلوج ألاسكا." },
+  { gid: 35, level: "B2", emoji: "⏳", title: "The Time Machine", titleAr: "آلة الزمن", author: "H. G. Wells", desc: "رحلة إلى المستقبل البعيد." },
+  { gid: 46, level: "B2", emoji: "👻", title: "A Christmas Carol", titleAr: "ترنيمة عيد الميلاد", author: "Charles Dickens", desc: "رجل بخيل يتغيّر بعد زيارة ثلاثة أشباح." },
+  { gid: 1661, level: "B2", emoji: "🔍", title: "The Adventures of Sherlock Holmes", titleAr: "مغامرات شرلوك هولمز", author: "Arthur Conan Doyle", desc: "أشهر محقّق في الأدب الإنجليزي." },
+  { gid: 829, level: "C1", emoji: "🧭", title: "Gulliver's Travels", titleAr: "رحلات غوليفر", author: "Jonathan Swift", desc: "رحلات إلى بلاد الأقزام والعمالقة." },
+  { gid: 84, level: "C1", emoji: "⚡", title: "Frankenstein", titleAr: "فرانكنشتاين", author: "Mary Shelley", desc: "العالِم الذي صنع مخلوقًا حيًّا." },
+  { gid: 1342, level: "C1", emoji: "💌", title: "Pride and Prejudice", titleAr: "كبرياء وتحامل", author: "Jane Austen", desc: "رواية كلاسيكية عن الحب والمجتمع الإنجليزي." }
+];

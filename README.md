@@ -3,7 +3,13 @@
 Application Android (APK) pour **comprendre l'anglais** quand on parle **arabe** (pensée pour un utilisateur tunisien).
 Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par phrase, et audio à **vitesse réglable**.
 
-📥 **APK prêt à installer : [`apk/EnglishArabi.apk`](apk/EnglishArabi.apk)** (Android 8.0+, ~31 Mo)
+📥 **APK prêt à installer : [`apk/EnglishArabi.apk`](apk/EnglishArabi.apk)** (version 2.0, Android 8.0+, ~31 Mo)
+
+## Nouveautés de la version 2.0
+
+- 📅 **Programme de 30 jours, 2 heures par jour** : un nouveau texte chaque jour (30 textes, 150 paragraphes, 532 phrases traduites), du niveau A1 au B2, avec 8 tâches quotidiennes (= 120 min) qui se cochent automatiquement, et un **chronomètre du temps d'étude** (objectif 30 min à 2 h, graphique des 7 derniers jours).
+- 📚 **« Mes livres »** : une zone pour ajouter ses propres livres : coller un texte, **importer un fichier TXT ou EPUB**, ou **télécharger 24 romans classiques gratuits** (Project Gutenberg : Fables d'Ésope, Alice, Les Mille et Une Nuits, Sherlock Holmes…). Chaque livre est découpé en chapitres d'environ 10 minutes, avec audio à vitesse réglable et traduction arabe phrase par phrase.
+- 🎤 **Studio de prononciation** : pour chaque phrase, écouter (normal, lent, ×3), **s'enregistrer**, **comparer** (le modèle puis sa propre voix), puis **se faire corriger** : score en %, mots corrects en vert, mots à retravailler en rouge, et écoute lente des mots manqués. Disponible pour tous les textes, y compris vos livres.
 
 > Installation : copier l'APK sur le téléphone → l'ouvrir → autoriser « Installer des applications inconnues ».
 > L'APK est signé avec une clé de développement (pas encore publié sur le Play Store).
@@ -22,7 +28,10 @@ Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par
 | 🗂️ **Vocabulaire** | ~295 mots en 17 thèmes (+ un dictionnaire de ~290 mots pour le clic-traduction) (famille, nourriture, travail, voyage, santé…) avec exemples audio. |
 | 🃏 **Cartes (répétition espacée)** | Système Leitner : un mot revient après 1, 2, 4, 8, 16… jours, juste avant qu'on l'oublie. |
 | 🎯 **Exercices** | Quiz d'écoute, quiz de sens (EN→AR et AR→EN), **dictée** avec correction mot par mot, **remettre la phrase dans l'ordre**, **prononciation** avec reconnaissance vocale et score en %. |
-| 🔥 **Motivation** | Série de jours, points quotidiens, objectif journalier, plan de leçon guidé en 4 étapes. |
+| 📅 **Programme 30 jours** | 30 textes progressifs, 8 tâches/jour (écoute lente, lecture, shadowing, écoute normale, révision de la veille, vocabulaire, dictée, lecture libre) = 2 h. |
+| 📚 **Mes livres** | Coller un texte, importer TXT/EPUB, 24 classiques gratuits à télécharger ; découpage automatique en chapitres. |
+| 🎤 **Studio de prononciation** | Écouter → s'enregistrer → comparer → correction mot par mot. |
+| 🔥 **Motivation** | Série de jours, chronomètre du temps d'étude, objectif journalier, plan de leçon guidé en 4 étapes. |
 
 ---
 
@@ -58,8 +67,10 @@ Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par
   - `TextToSpeech` Android : anglais US/UK et arabe, vitesse réglable, événements mot par mot (`onRangeStart`) pour le karaoké.
   - **Google ML Kit Translate** : traduction EN⇄AR sur l'appareil (repli en ligne MyMemory si indisponible).
   - `RecognizerIntent` : reconnaissance vocale pour l'exercice de prononciation.
+  - Téléchargement des livres (Project Gutenberg + miroirs) côté natif, sélecteur de fichiers et autorisation micro pour l'enregistrement.
 - **Interface** : HTML/CSS/JS dans `app/src/main/assets/www/` (servie via `WebViewAssetLoader`), RTL arabe, mode sombre.
-  - Contenu : `data/books.js` (textes) et `data/words.js` (vocabulaire + dictionnaire). Pour ajouter un livre, ajouter un objet dans `BOOKS`.
+  - Contenu : `data/books.js` (textes), `data/program1-3.js` (programme 30 jours), `data/classics.js` (catalogue de classiques) et `data/words.js` (vocabulaire + dictionnaire).
+  - Les livres ajoutés par l'utilisateur sont stockés dans IndexedDB ; l'EPUB est lu avec JSZip (inclus, licence MIT).
 - Données utilisateur (mots, progression) stockées localement sur le téléphone.
 
 ## Compiler

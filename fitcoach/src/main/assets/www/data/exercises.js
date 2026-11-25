@@ -17,6 +17,9 @@
     { id: 'quads', icon: '🦵', recovery: 72, name: T('Quadriceps (cuisses avant)', 'Quads (front thighs)', 'الفخذ الأمامي') },
     { id: 'hamstrings', icon: '🦿', recovery: 72, name: T('Ischio-jambiers (arrière cuisse)', 'Hamstrings', 'الفخذ الخلفي') },
     { id: 'calves', icon: '🦶', recovery: 48, name: T('Mollets', 'Calves', 'السمانة (بطة الساق)') },
+    { id: 'traps', icon: '🔺', recovery: 48, name: T('Trapèzes', 'Traps', 'عضلة الترابيس (الرقبة)') },
+    { id: 'forearms', icon: '✊', recovery: 48, name: T('Avant-bras', 'Forearms', 'الساعد') },
+    { id: 'lowerback', icon: '🧘', recovery: 72, name: T('Bas du dos (lombaires)', 'Lower back', 'أسفل الظهر') },
   ];
 
   // Which muscles each day of a split trains (used by the smart planner).
@@ -32,6 +35,7 @@
     barbell: T('Barre', 'Barbell', 'بار (عمود حديد)'),
     bar: T('Barre de traction', 'Pull-up bar', 'عقلة'),
     bench: T('Banc / chaise', 'Bench / chair', 'بنك / كرسي'),
+    machine: T('Machine (salle)', 'Machine (gym)', 'آلة (قاعة رياضة)'),
   };
 
   const S = (fr, en, ar) => T(fr, en, ar);
@@ -113,7 +117,7 @@
       frames: [{ t: 25, l: -80, s: -100, a: -90, f: -90 }, { t: 25, l: -80, s: -100, a: 165, f: -95 }],
     },
     {
-      id: 'superman', group: 'back', second: ['glutes'], equip: ['none'], level: 0,
+      id: 'superman', group: 'lowerback', second: ['back', 'glutes'], equip: ['none'], level: 0,
       name: T('Superman', 'Superman', 'تمرين سوبرمان'),
       steps: [
         S('Allongé sur le ventre, bras tendus devant.', 'Lie face down, arms stretched forward.', 'استلقِ على بطنك والذراعان ممدودتان للأمام.'),
@@ -296,7 +300,7 @@
       mistakes: [S('Cambrer le dos au lieu de serrer les fessiers.', 'Arching the back instead of squeezing glutes.', 'تقويس الظهر بدل عصر المؤخرة.'), S('Pieds trop loin (ischios qui crampent).', 'Feet too far (hamstrings cramp).', 'القدمان بعيدتان (تشنج الفخذ الخلفي).')],
       tip: S('Ajoutez un poids sur les hanches pour progresser.', 'Add weight on your hips to progress.', 'ضع وزنًا على الحوض للتقدم.'),
       anchor: { p: 'ankle', x: 125, y: 0 },
-      frames: [{ t: 180, l: 40, s: -75, a: 0, f: 0 }, { t: 200, l: 20, s: -88, a: -18, f: -18 }],
+      frames: [{ t: 180, l: 40, s: -75, a: 0, f: 0 }, { t: 192, l: 20, s: -88, a: -12, f: -12 }],
     },
     {
       id: 'hip_thrust', group: 'glutes', second: ['hamstrings', 'quads'], equip: ['bench'], level: 1, analyzer: 'bridge',

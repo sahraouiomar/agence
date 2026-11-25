@@ -29,7 +29,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.objects.ObjectDetection
+import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import com.google.mlkit.vision.label.ImageLabeling
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.google.mlkit.vision.pose.PoseDetection
@@ -38,6 +41,8 @@ import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -54,6 +59,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val net = Executors.newFixedThreadPool(2)
     private var pendingImageCb: String? = null
     private var pendingImageSource = "camera"
     private var pendingVideoCb: String? = null
@@ -73,6 +79,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private val labeler by lazy {
         ImageLabeling.getClient(ImageLabelerOptions.Builder().setConfidenceThreshold(0.35f).build())
     }
+    private val barcodes by lazy { BarcodeScanning.getClient() }
+    private val objects by lazy {
+        ObjectDetection.getClient(
+            ObjectDetectorOptions.Builder()
+                .setDetectorMode(ObjectDetectorOptions.SINGLE_IMAGE_MODE)
+                .enableMultipleObjects()
+                .enableClassification()
+                .build()
+        )
+    }
 
     // --- activity results -------------------------------------------------------------------
 
@@ -80,7 +96,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bmp ->
             val cb = pendingImageCb ?: return@registerForActivityResult
             pendingImageCb = null
-            if (bmp == null) imageResult(cb, null, "cancel") else analyzeFood(cb, bmp)
+            if (bmp == null) imageResult(cb, null, "cancel") else worker.execute { analyzeFood(cb, bmp) }
         }
 
     private val pickImage =
@@ -211,16 +227,68 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun imageResult(cb: String, json: JSONObject?, err: String?) =
         js("__native.onImage(${q(cb)}, ${json ?: "null"}, ${if (err == null) "null" else q(err)})")
 
-    private fun analyzeFood(cb: String, bmp: Bitmap) {
-        labeler.process(InputImage.fromBitmap(bmp, 0))
-            .addOnSuccessListener { labels ->
-                val arr = JSONArray()
-                labels.forEach { arr.put(JSONObject().put("text", it.text).put("conf", it.confidence.toDouble())) }
-                worker.execute {
-                    imageResult(cb, JSONObject().put("img", dataUrl(scale(bmp, 640))).put("labels", arr), null)
-                }
+    private fun labelsOf(bmp: Bitmap): JSONArray {
+        val arr = JSONArray()
+        try {
+            Tasks.await(labeler.process(InputImage.fromBitmap(bmp, 0))).forEach {
+                arr.put(JSONObject().put("text", it.text).put("conf", it.confidence.toDouble()))
             }
-            .addOnFailureListener { e -> imageResult(cb, null, e.message ?: "error") }
+        } catch (_: Exception) {}
+        return arr
+    }
+
+    /**
+     * Runs on [worker]. One photo -> whole-image labels, barcodes (packaged products) and the
+     * separate items found on the plate, each with its own labels and a small thumbnail.
+     */
+    private fun analyzeFood(cb: String, bmp: Bitmap) {
+        try {
+            val img = InputImage.fromBitmap(bmp, 0)
+            val codes = JSONArray()
+            try {
+                Tasks.await(barcodes.process(img)).forEach { b -> b.rawValue?.let { codes.put(it) } }
+            } catch (_: Exception) {}
+            val items = JSONArray()
+            try {
+                val found = Tasks.await(objects.process(img))
+                    .filter { it.boundingBox.width() * it.boundingBox.height() > bmp.width * bmp.height * 0.03 }
+                    .sortedByDescending { it.boundingBox.width() * it.boundingBox.height() }
+                    .take(6)
+                for (o in found) {
+                    val r = o.boundingBox
+                    val x = r.left.coerceIn(0, bmp.width - 1); val y = r.top.coerceIn(0, bmp.height - 1)
+                    val w = r.width().coerceAtMost(bmp.width - x); val h = r.height().coerceAtMost(bmp.height - y)
+                    if (w < 16 || h < 16) continue
+                    val crop = Bitmap.createBitmap(bmp, x, y, w, h)
+                    items.put(
+                        JSONObject()
+                            .put("box", JSONArray().put(x.toDouble() / bmp.width).put(y.toDouble() / bmp.height)
+                                .put(w.toDouble() / bmp.width).put(h.toDouble() / bmp.height))
+                            .put("labels", labelsOf(crop))
+                            .put("thumb", dataUrl(scale(crop, 200), 70))
+                    )
+                }
+            } catch (_: Exception) {}
+            val res = JSONObject()
+                .put("img", dataUrl(scale(bmp, 1024), 80))
+                .put("labels", labelsOf(bmp))
+                .put("barcodes", codes)
+                .put("items", items)
+            imageResult(cb, res, null)
+        } catch (e: Exception) {
+            imageResult(cb, null, e.message ?: "error")
+        }
+    }
+
+    private fun httpGet(url: String): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 12000; c.readTimeout = 15000
+        c.setRequestProperty("User-Agent", "FitCoach/2.0 (Android)")
+        c.setRequestProperty("Accept", "application/json")
+        try {
+            if (c.responseCode !in 200..299) throw Exception("HTTP " + c.responseCode)
+            return c.inputStream.bufferedReader().use { it.readText() }
+        } finally { c.disconnect() }
     }
 
     // --- pose -------------------------------------------------------------------------------
@@ -332,6 +400,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             } catch (_: Exception) { "null" }
         }
 
+        /** GET a public JSON API (Open Food Facts). Result -> __native.onHttp(cb, text, err) */
+        @JavascriptInterface
+        fun get(url: String, cb: String) {
+            if (!url.startsWith("https://")) { js("__native.onHttp(${q(cb)}, null, 'url')"); return }
+            net.execute {
+                try { js("__native.onHttp(${q(cb)}, ${q(httpGet(url))}, null)") }
+                catch (e: Exception) { js("__native.onHttp(${q(cb)}, null, ${q(e.message ?: "network")})") }
+            }
+        }
+
         @JavascriptInterface
         fun isNative(): Boolean = true
     }
@@ -344,6 +422,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         tts?.shutdown()
         worker.shutdownNow()
+        net.shutdownNow()
         web.destroy()
         super.onDestroy()
     }

@@ -11,8 +11,8 @@ android {
         applicationId = "tn.fitcoach.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
@@ -39,4 +39,8 @@ dependencies {
     implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
     // On-device image labelling to recognise food in photos — works offline
     implementation("com.google.mlkit:image-labeling:17.0.9")
+    // On-device barcode reading (packaged products -> Open Food Facts lookup)
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // On-device object detection: finds the separate items on a plate
+    implementation("com.google.mlkit:object-detection:17.0.2")
 }

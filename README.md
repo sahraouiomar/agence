@@ -1,5 +1,7 @@
 # إنجليزي بالعربي — English for Arabic speakers (Tunisia)
 
+> 🆕 Ce dépôt contient aussi **FitCoach**, un coach sportif et nutrition (FR/EN/AR) : voir [`fitcoach/README.md`](fitcoach/README.md) — APK : [`apk/FitCoach.apk`](apk/FitCoach.apk).
+
 Application Android (APK) pour **comprendre l'anglais** quand on parle **arabe** (pensée pour un utilisateur tunisien).
 Interface entièrement en arabe, contenu en anglais, traduction arabe phrase par phrase, et audio à **vitesse réglable**.
 

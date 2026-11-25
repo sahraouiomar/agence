@@ -1,0 +1,42 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "tn.fitcoach"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "tn.fitcoach.app"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            // Signed with the debug key so the APK installs directly on a phone.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    androidResources { noCompress += listOf("tflite") }
+}
+
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.webkit:webkit:1.12.1")
+    // On-device body pose detection (33 points) for exercise form correction — works offline
+    implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
+    // On-device image labelling to recognise food in photos — works offline
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+}

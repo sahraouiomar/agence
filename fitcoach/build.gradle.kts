@@ -11,9 +11,18 @@ android {
         applicationId = "tn.fitcoach.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        versionCode = 3
+        versionName = "3.0"
+    }
+
+    // One APK per processor type keeps each download small (the native AI libraries are big).
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
     }
 
     buildTypes {
@@ -43,4 +52,8 @@ dependencies {
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     // On-device object detection: finds the separate items on a plate
     implementation("com.google.mlkit:object-detection:17.0.2")
+    // Custom on-device classifier: Google AIY Food V1 (2,023 dishes, Apache-2.0) in assets/ml/
+    implementation("com.google.mlkit:image-labeling-custom:17.0.3")
+    // Fingerprint / face / PIN unlock
+    implementation("androidx.biometric:biometric:1.1.0")
 }

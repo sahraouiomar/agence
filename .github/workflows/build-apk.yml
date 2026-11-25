@@ -24,4 +24,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: FitCoach-apk
-          path: fitcoach/build/outputs/apk/release/fitcoach-release.apk
+          path: fitcoach/build/outputs/apk/release/*.apk

@@ -1,6 +1,21 @@
 package tn.fitcoach
 
 import android.Manifest
+import android.accounts.AccountManager
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.view.WindowManager
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
+import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+import androidx.biometric.BiometricPrompt
+import com.google.mlkit.common.model.LocalModel
+import com.google.mlkit.vision.label.custom.CustomImageLabelerOptions
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -65,6 +80,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var pendingVideoCb: String? = null
     private var pendingWebCam: PermissionRequest? = null
     private var lastVideo: Uri? = null
+    private var pendingAccountCb: String? = null
+    /** true only while our own bundled page is displayed: the JS bridge refuses any other origin */
+    @Volatile private var trustedPage = false
+
+    /** Google AIY Food V1 classifier (2,023 dishes), runs offline */
+    private val foodLabeler by lazy {
+        val model = LocalModel.Builder().setAssetFilePath("ml/food_v1.tflite").build()
+        ImageLabeling.getClient(
+            CustomImageLabelerOptions.Builder(model).setConfidenceThreshold(0.08f).setMaxResultCount(6).build()
+        )
+    }
+    private val foodNames: List<String> by lazy {
+        try { assets.open("ml/food_v1_labels.txt").bufferedReader().readLines() } catch (_: Exception) { emptyList() }
+    }
 
     private val streamPose: PoseDetector by lazy {
         PoseDetection.getClient(
@@ -118,6 +147,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             worker.execute { analyzeVideo(cb, uri) }
         }
 
+    private val chooseAccount =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+            val cb = pendingAccountCb ?: return@registerForActivityResult
+            pendingAccountCb = null
+            val name = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+            js("__native.onAccount(${q(cb)}, ${if (name == null) "null" else q(name)})")
+        }
+
     private val cameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             pendingWebCam?.let { req ->
@@ -145,11 +182,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         web = WebView(this)
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
+        // hardening: the page is served from assets through WebViewAssetLoader, no file:// or content:// access
+        web.settings.allowFileAccess = false
+        web.settings.allowContentAccess = false
+        web.settings.setGeolocationEnabled(false)
+        web.settings.javaScriptCanOpenWindowsAutomatically = false
+        web.settings.setSupportMultipleWindows(false)
         web.settings.mediaPlaybackRequiresUserGesture = false
         web.settings.textZoom = 100
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                 loader.shouldInterceptRequest(request.url)
+
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                trustedPage = url?.startsWith("https://appassets.androidplatform.net/assets/www/") == true
+            }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url
@@ -237,6 +284,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return arr
     }
 
+    private fun foodsOf(bmp: Bitmap): JSONArray {
+        val arr = JSONArray()
+        try {
+            Tasks.await(foodLabeler.process(InputImage.fromBitmap(bmp, 0))).forEach {
+                val name = it.text.ifBlank { foodNames.getOrNull(it.index) ?: "" }
+                if (name.isNotBlank() && name != "__background__")
+                    arr.put(JSONObject().put("text", name).put("conf", it.confidence.toDouble()))
+            }
+        } catch (_: Exception) {}
+        return arr
+    }
+
     /**
      * Runs on [worker]. One photo -> whole-image labels, barcodes (packaged products) and the
      * separate items found on the plate, each with its own labels and a small thumbnail.
@@ -265,6 +324,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                             .put("box", JSONArray().put(x.toDouble() / bmp.width).put(y.toDouble() / bmp.height)
                                 .put(w.toDouble() / bmp.width).put(h.toDouble() / bmp.height))
                             .put("labels", labelsOf(crop))
+                            .put("foods", foodsOf(crop))
                             .put("thumb", dataUrl(scale(crop, 200), 70))
                     )
                 }
@@ -272,6 +332,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val res = JSONObject()
                 .put("img", dataUrl(scale(bmp, 1024), 80))
                 .put("labels", labelsOf(bmp))
+                .put("foods", foodsOf(bmp))
                 .put("barcodes", codes)
                 .put("items", items)
             imageResult(cb, res, null)
@@ -342,9 +403,98 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    // --- Android Keystore: wraps the account encryption keys so they never sit in clear on disk ----
+
+    private fun keystoreKey(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey("fc_master", null) as? SecretKey)?.let { return it }
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        gen.init(
+            KeyGenParameterSpec.Builder("fc_master", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+        )
+        return gen.generateKey()
+    }
+
+    private fun wrap(plainB64: String): String {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, keystoreKey())
+        val out = c.iv + c.doFinal(Base64.decode(plainB64, Base64.NO_WRAP))
+        return Base64.encodeToString(out, Base64.NO_WRAP)
+    }
+
+    private fun unwrap(wrappedB64: String): String {
+        val all = Base64.decode(wrappedB64, Base64.NO_WRAP)
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE, keystoreKey(), GCMParameterSpec(128, all, 0, 12))
+        return Base64.encodeToString(c.doFinal(all, 12, all.size - 12), Base64.NO_WRAP)
+    }
+
+    private fun canBiometric(): Boolean =
+        BiometricManager.from(this).canAuthenticate(BIOMETRIC_WEAK or DEVICE_CREDENTIAL) == BiometricManager.BIOMETRIC_SUCCESS
+
     // --- JS bridge ----------------------------------------------------------------------------
 
     inner class Bridge {
+        private fun ok() = trustedPage
+
+        /** Encrypt bytes with the hardware-backed Keystore key (account keys, "stay signed in"). */
+        @JavascriptInterface
+        fun wrapKey(b64: String): String = if (!ok()) "" else try { wrap(b64) } catch (_: Exception) { "" }
+
+        @JavascriptInterface
+        fun unwrapKey(b64: String): String = if (!ok()) "" else try { unwrap(b64) } catch (_: Exception) { "" }
+
+        @JavascriptInterface
+        fun biometricAvailable(): Boolean = ok() && canBiometric()
+
+        /** Fingerprint / face / device PIN. Result -> __native.onAuth(cb, ok) */
+        @JavascriptInterface
+        fun authenticate(title: String, cb: String) {
+            if (!ok()) return
+            main.post {
+                if (!canBiometric()) { js("__native.onAuth(${q(cb)}, false)"); return@post }
+                val prompt = BiometricPrompt(this@MainActivity, ContextCompat.getMainExecutor(this@MainActivity),
+                    object : BiometricPrompt.AuthenticationCallback() {
+                        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) =
+                            js("__native.onAuth(${q(cb)}, true)")
+                        override fun onAuthenticationError(code: Int, msg: CharSequence) =
+                            js("__native.onAuth(${q(cb)}, false)")
+                    })
+                prompt.authenticate(
+                    BiometricPrompt.PromptInfo.Builder().setTitle(title.take(60))
+                        .setAllowedAuthenticators(BIOMETRIC_WEAK or DEVICE_CREDENTIAL).build()
+                )
+            }
+        }
+
+        /** System picker of the Google (Gmail) accounts on this phone. Result -> __native.onAccount(cb, email|null) */
+        @JavascriptInterface
+        fun chooseGoogleAccount(cb: String) {
+            if (!ok()) return
+            main.post {
+                pendingAccountCb = cb
+                try {
+                    chooseAccount.launch(
+                        AccountManager.newChooseAccountIntent(null, null, arrayOf("com.google"), null, null, null, null)
+                    )
+                } catch (e: Exception) { pendingAccountCb = null; js("__native.onAccount(${q(cb)}, null)") }
+            }
+        }
+
+        /** Hide the app content in "recent apps" and block screenshots. */
+        @JavascriptInterface
+        fun setSecure(on: Boolean) {
+            if (!ok()) return
+            main.post {
+                if (on) window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+                else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
+
         @JavascriptInterface
         fun speak(text: String, lang: String) {
             main.post {
@@ -358,11 +508,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         fun stopSpeak() { main.post { tts?.stop() } }
 
         @JavascriptInterface
-        fun openUrl(url: String) { main.post { openExternal(url) } }
+        fun openUrl(url: String) { if (ok() && url.startsWith("https://")) main.post { openExternal(url) } }
 
         /** source = "camera" | "gallery". Result -> __native.onImage(cb, {img, labels}, err) */
         @JavascriptInterface
         fun pickImage(source: String, cb: String) {
+            if (!ok()) return
             main.post {
                 pendingImageCb = cb
                 pendingImageSource = source
@@ -375,6 +526,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         /** Result -> __native.onVideo(cb, {duration,w,h,frames:[{t,lm}]}, err) */
         @JavascriptInterface
         fun pickVideo(cb: String) {
+            if (!ok()) return
             main.post { pendingVideoCb = cb; pickVideo.launch("video/*") }
         }
 
@@ -393,6 +545,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         /** Live camera frame (JPEG data URL) -> landmarks JSON "[[x,y,v],...]" or "null". Blocking. */
         @JavascriptInterface
         fun poseFrame(data: String): String {
+            if (!ok()) return "null"
             return try {
                 val bytes = Base64.decode(data.substringAfter(","), Base64.DEFAULT)
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return "null"
@@ -403,7 +556,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         /** GET a public JSON API (Open Food Facts). Result -> __native.onHttp(cb, text, err) */
         @JavascriptInterface
         fun get(url: String, cb: String) {
-            if (!url.startsWith("https://")) { js("__native.onHttp(${q(cb)}, null, 'url')"); return }
+            // only the public food database may be called from the page
+            val host = try { Uri.parse(url).host } catch (_: Exception) { null }
+            if (!ok() || !url.startsWith("https://") || host != "world.openfoodfacts.org") {
+                js("__native.onHttp(${q(cb)}, null, 'blocked')"); return
+            }
             net.execute {
                 try { js("__native.onHttp(${q(cb)}, ${q(httpGet(url))}, null)") }
                 catch (e: Exception) { js("__native.onHttp(${q(cb)}, null, ${q(e.message ?: "network")})") }
@@ -417,6 +574,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onPause() {
         super.onPause()
         web.evaluateJavascript("window.__native && __native.onPause && __native.onPause()", null)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::web.isInitialized) web.evaluateJavascript("window.__native && __native.onResume && __native.onResume()", null)
     }
 
     override fun onDestroy() {

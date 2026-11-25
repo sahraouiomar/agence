@@ -27,49 +27,201 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
     del(k) { try { localStorage.removeItem(k); } catch (e) {} },
   };
-  let user = null; // username
-  let D = null; // user data
+  let user = null; // account key
+  let D = null; // decrypted user data (memory only)
+  let DEK = null; // AES-GCM key of this account (non-extractable)
+  let saveTimer = 0;
 
-  function blankData() { return { profile: null, workouts: [], food: {}, prefs: { swaps: {} } }; }
-  const saveData = () => store.set('fc_u_' + user, D);
-
-  async function hashPass(pass, salt) {
-    try {
-      const enc = new TextEncoder();
-      const key = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveBits']);
-      const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode(salt), iterations: 100000, hash: 'SHA-256' }, key, 256);
-      return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    } catch (e) { // very old WebView fallback
-      let h = 2166136261;
-      for (const c of salt + pass + salt) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
-      return 'f' + (h >>> 0).toString(16);
-    }
+  function blankData() { return { profile: null, workouts: [], food: {}, prefs: { swaps: {} }, health: [], program: null }; }
+  const users = () => store.get('fc_users', {});
+  const setUsers = (u) => store.set('fc_users', u);
+  // encrypted, debounced save
+  function saveData(now) {
+    if (!user || !DEK) return;
+    clearTimeout(saveTimer);
+    const u = user, key = DEK;
+    const run = async () => { if (u !== user) return; try { localStorage.setItem('fc_u_' + u, await Sec.encryptJSON(key, D)); } catch (e) {} };
+    if (now) run(); else saveTimer = setTimeout(run, 200);
   }
-  const randSalt = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+  // ---- legacy (v1/v2) password hash, only used once to migrate old accounts
+  async function legacyHash(pass, salt) {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode(salt), iterations: 100000, hash: 'SHA-256' }, key, 256);
+    return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  const saltHex = () => [...Sec.rand(16)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const keyOf = (name) => String(name || '').trim().toLowerCase();
+  function validName(name) {
+    const n = String(name || '').trim();
+    if (n.includes('@')) return Sec.EMAIL.test(n);
+    return /^[\p{L}\p{N}._-]{3,30}$/u.test(n);
+  }
+
+  // brute-force protection: after 5 failures, wait 30 s, doubling up to 15 min
+  function guardCheck() {
+    const g = store.get('fc_guard', { fails: 0, until: 0 });
+    if (g.until > Date.now()) throw t('err_locked', { n: Math.ceil((g.until - Date.now()) / 1000) });
+  }
+  function guardFail() {
+    const g = store.get('fc_guard', { fails: 0, until: 0 });
+    g.fails++;
+    if (g.fails >= 5) g.until = Date.now() + Math.min(900, 30 * 2 ** (g.fails - 5)) * 1000;
+    store.set('fc_guard', g);
+  }
+  const guardOk = () => store.set('fc_guard', { fails: 0, until: 0 });
+
+  async function wrapWithSecret(rawDek, secret) {
+    const salt = saltHex();
+    const { verifier, kek } = await Sec.fromSecret(secret, salt);
+    return { salt, verifier, wrap: await Sec.seal(kek, rawDek) };
+  }
+
+  // open an account once its data key is known
+  async function openAccount(k, rawDek, remember = true) {
+    DEK = await Sec.aesKey(rawDek);
+    const blob = localStorage.getItem('fc_u_' + k);
+    let data = null;
+    if (blob && blob.startsWith('v2:')) data = await Sec.decryptJSON(DEK, blob);
+    else if (blob) { try { data = JSON.parse(blob); } catch (e) { data = null; } } // legacy clear-text data -> encrypted below
+    user = k;
+    D = Object.assign(blankData(), data || {});
+    D.prefs = Object.assign({ swaps: {} }, D.prefs);
+    saveData(true);
+    if (remember) {
+      const b = Sec.b64(rawDek);
+      if (NATIVE && Android.wrapKey) { const w = Android.wrapKey(b); if (w) store.set('fc_session', { k, w }); }
+      else try { sessionStorage.setItem('fc_s', JSON.stringify({ k, raw: b })); } catch (e) {}
+    }
+    const u = users()[k];
+    if (NATIVE && Android.setSecure) Android.setSecure(!!(u && u.secure));
+  }
 
   async function signup(name, pass) {
-    const users = store.get('fc_users', {});
-    const k = name.trim().toLowerCase();
-    if (users[k]) throw t('err_exists');
-    const salt = randSalt();
-    users[k] = { salt, hash: await hashPass(pass, salt), display: name.trim() };
-    store.set('fc_users', users);
-    store.set('fc_u_' + k, blankData());
-    return k;
+    const all = users();
+    const k = keyOf(name);
+    if (all[k]) throw t('err_exists');
+    const dek = Sec.rand(32);
+    const code = Sec.recoveryCode();
+    const p = await wrapWithSecret(dek, pass);
+    const r = await wrapWithSecret(dek, Sec.normCode(code));
+    all[k] = { v: 3, kind: 'password', display: name.trim(), email: name.includes('@') ? k : null, created: Date.now(), salt: p.salt, verifier: p.verifier, wrapP: p.wrap, recSalt: r.salt, wrapR: r.wrap };
+    setUsers(all);
+    await openAccount(k, dek);
+    return code;
   }
+
   async function login(name, pass) {
-    const users = store.get('fc_users', {});
-    const k = name.trim().toLowerCase();
-    const u = users[k];
-    if (!u || (await hashPass(pass, u.salt)) !== u.hash) throw t('err_login');
-    return k;
+    guardCheck();
+    const all = users();
+    const k = keyOf(name);
+    const u = all[k];
+    if (!u || u.kind === 'google') { guardFail(); throw t('err_login'); }
+    if (!u.v) { // migrate an account created by FitCoach 1.x / 2.x
+      if (!Sec.same(await legacyHash(pass, u.salt), u.hash)) { guardFail(); throw t('err_login'); }
+      guardOk();
+      const dek = Sec.rand(32);
+      const code = Sec.recoveryCode();
+      const p = await wrapWithSecret(dek, pass), r = await wrapWithSecret(dek, Sec.normCode(code));
+      all[k] = { v: 3, kind: 'password', display: u.display || name, email: k.includes('@') ? k : null, created: Date.now(), salt: p.salt, verifier: p.verifier, wrapP: p.wrap, recSalt: r.salt, wrapR: r.wrap };
+      setUsers(all);
+      await openAccount(k, dek);
+      return code; // show the new recovery code once
+    }
+    const { verifier, kek } = await Sec.fromSecret(pass, u.salt);
+    if (!Sec.same(verifier, u.verifier)) { guardFail(); throw t('err_login'); }
+    guardOk();
+    await openAccount(k, await Sec.open(kek, u.wrapP));
+    return null;
   }
-  function openSession(k) {
-    user = k;
-    D = Object.assign(blankData(), store.get('fc_u_' + k, {}));
-    store.set('fc_session', k);
+
+  async function recoverAccount(name, code, newPass) {
+    guardCheck();
+    const all = users();
+    const k = keyOf(name);
+    const u = all[k];
+    if (!u || !u.wrapR) { guardFail(); throw t('err_recovery'); }
+    let dek;
+    try { const { kek } = await Sec.fromSecret(Sec.normCode(code), u.recSalt); dek = await Sec.open(kek, u.wrapR); } catch (e) { guardFail(); throw t('err_recovery'); }
+    guardOk();
+    const p = await wrapWithSecret(dek, newPass);
+    Object.assign(u, { salt: p.salt, verifier: p.verifier, wrapP: p.wrap });
+    setUsers(all);
+    await openAccount(k, dek);
   }
-  const displayName = () => (store.get('fc_users', {})[user] || {}).display || user;
+
+  async function changePassword(oldPass, newPass) {
+    const all = users(), u = all[user];
+    const { verifier, kek } = await Sec.fromSecret(oldPass, u.salt);
+    if (!Sec.same(verifier, u.verifier)) throw t('err_login');
+    const dek = await Sec.open(kek, u.wrapP);
+    const p = await wrapWithSecret(dek, newPass);
+    Object.assign(u, { salt: p.salt, verifier: p.verifier, wrapP: p.wrap });
+    setUsers(all);
+  }
+
+  // Google (Gmail) account chosen with Android's account picker; the data key lives in the Keystore.
+  const nativeAsk = (fn, ...args) => new Promise((res) => fn(...args, reg({ done: res })));
+  async function biometricGate(k) {
+    const u = users()[k];
+    if (!u || !u.lock || !NATIVE || !Android.biometricAvailable || !Android.biometricAvailable()) return true;
+    return nativeAsk((cb) => Android.authenticate(t('unlock_title'), cb));
+  }
+  async function googleLogin() {
+    if (!NATIVE || !Android.chooseGoogleAccount) throw t('needs_app');
+    const email = await nativeAsk((cb) => Android.chooseGoogleAccount(cb));
+    if (!email) return false;
+    const k = 'g:' + keyOf(email);
+    const all = users();
+    if (all[k]) {
+      if (!(await biometricGate(k))) throw t('err_unlock');
+      const raw = Android.unwrapKey(all[k].wrapK);
+      if (!raw) throw t('err_keystore');
+      await openAccount(k, Sec.unb64(raw));
+      return true;
+    }
+    const dek = Sec.rand(32);
+    const w = Android.wrapKey(Sec.b64(dek));
+    if (!w) throw t('err_keystore');
+    all[k] = { v: 3, kind: 'google', display: email.split('@')[0], email: keyOf(email), created: Date.now(), wrapK: w };
+    setUsers(all);
+    await openAccount(k, dek);
+    return true;
+  }
+
+  async function resumeSession() {
+    let s = store.get('fc_session', null);
+    let raw = null;
+    if (s && users()[s.k] && NATIVE && Android.unwrapKey) {
+      if (!(await biometricGate(s.k))) return false;
+      raw = Android.unwrapKey(s.w);
+    } else {
+      try { s = JSON.parse(sessionStorage.getItem('fc_s') || 'null'); raw = s && s.raw; } catch (e) { s = null; }
+    }
+    if (!s || !raw || !users()[s.k]) return false;
+    try { await openAccount(s.k, Sec.unb64(raw), false); return true; } catch (e) { return false; }
+  }
+
+  function logout() {
+    saveData(true);
+    store.del('fc_session');
+    try { sessionStorage.removeItem('fc_s'); } catch (e) {}
+    user = null; D = null; DEK = null; W = null;
+    if (NATIVE && Android.setSecure) Android.setSecure(false);
+  }
+  async function deleteAccount(pass) {
+    const all = users(), u = all[user];
+    if (u.kind === 'password') {
+      const { verifier } = await Sec.fromSecret(pass, u.salt);
+      if (!Sec.same(verifier, u.verifier)) throw t('err_login');
+    }
+    const k = user;
+    logout();
+    delete all[k]; setUsers(all);
+    store.del('fc_u_' + k);
+  }
+  const displayName = () => (users()[user] || {}).display || user;
 
   // ------------------------------------------------------------------ body calculations
   function body(p = D.profile) {
@@ -321,7 +473,10 @@
     onVideo(id, res, err) { const c = callbacks[id]; delete callbacks[id]; c && c.done(res, err); },
     onHttp(id, txt, err) { const c = callbacks[id]; delete callbacks[id]; c && c.done(txt, err); },
     onBack() { if (modalOpen()) { closeModal(); return true; } if (stack.length > 1) { goBack(); return true; } return false; },
-    onPause() { stopLive(); },
+    onPause() { stopLive(); pausedAt = Date.now(); saveData(true); },
+    onResume() { lockIfNeeded(); },
+    onAccount(id, email) { const c = callbacks[id]; delete callbacks[id]; c && c.done(email); },
+    onAuth(id, ok) { const c = callbacks[id]; delete callbacks[id]; c && c.done(!!ok); },
   };
   const speak = (s) => { if (NATIVE && voiceOn) try { Android.speak(s, I18N.lang); } catch (e) {} };
   let voiceOn = store.get('fc_voice', true);
@@ -345,10 +500,11 @@
     document.documentElement.lang = I18N.lang;
     document.documentElement.dir = I18N.lang === 'ar' ? 'rtl' : 'ltr';
     if (!user) { app().innerHTML = viewLogin(); bindLogin(); $('#nav').hidden = true; return; }
-    $('#nav').hidden = false;
+    $('#nav').hidden = view === 'mode';
+    document.body.dataset.mode = mode();
     Figure.setSex(D.profile?.sex);
     renderNav();
-    const V = { home: viewHome, train: viewTrain, exercise: viewExercise, workout: viewWorkout, food: viewFood, coach: viewCoach, me: viewMe, history: viewHistory, science: viewScience };
+    const V = { home: viewHome, train: viewTrain, exercise: viewExercise, workout: viewWorkout, food: viewFood, coach: viewCoach, me: viewMe, history: viewHistory, science: viewScience, mode: viewMode, program: viewProgram, progEdit: viewProgEdit, health: viewHealth };
     app().innerHTML = (V[view] || viewHome)(arg);
     window.scrollTo(0, 0);
     after(view, arg);
@@ -356,53 +512,98 @@
   function renderNav() {
     const root = stack[0][0];
     const item = ([v, i, k]) => `<button data-tab="${v}" class="${root === v ? 'on' : ''}"><span class="ni">${i}</span><span class="nl">${t(k)}</span></button>`;
-    $('#nav').innerHTML = [['home', '🏠', 't_home'], ['train', '🏋️', 't_train']].map(item).join('') +
-      `<button data-tab="coach" class="fab ${root === 'coach' ? 'on' : ''}" aria-label="${t('t_coach')}"><span>📷</span></button>` +
-      [['food', '🥗', 't_food'], ['me', '👤', 't_me']].map(item).join('');
+    const fab = (act, ic, label, on) => `<button ${act} class="fab ${on ? 'on' : ''}" aria-label="${label}"><span>${ic}</span></button>`;
+    let left, right, mid;
+    if (mode() === 'healthy') { left = [['home', '🏠', 't_home'], ['food', '🥗', 't_food']]; mid = fab('data-act="photo" data-src="camera"', '📸', t('scan_food'), false); right = [['health', '🩺', 't_health'], ['me', '👤', 't_me']]; }
+    else if (mode() === 'pro') { left = [['home', '🏠', 't_home'], ['train', '🏋️', 't_train']]; mid = fab('data-tab="coach"', '📷', t('t_coach'), root === 'coach'); right = [['food', '🥗', 't_food'], ['health', '🩺', 't_health']]; }
+    else { left = [['home', '🏠', 't_home'], ['train', '🏋️', 't_train']]; mid = fab('data-tab="coach"', '📷', t('t_coach'), root === 'coach'); right = [['food', '🥗', 't_food'], ['me', '👤', 't_me']]; }
+    $('#nav').innerHTML = left.map(item).join('') + mid + right.map(item).join('');
   }
   const header = (title, back = true) => `<header class="top">${back && stack.length > 1 ? `<button class="icon" data-act="back" aria-label="${t('back')}">${I18N.lang === 'ar' ? '→' : '←'}</button>` : ''}<h1>${esc(title)}</h1></header>`;
 
   // ------------------------------------------------------------------ views: login
-  let loginMode = 'login';
+  let loginMode = 'login'; // login | signup | recover
   function langPicker() {
     return `<div class="langs">${['fr', 'en', 'ar'].map((l) => `<button data-lang="${l}" class="${I18N.lang === l ? 'on' : ''}">${{ fr: 'Français', en: 'English', ar: 'العربية' }[l]}</button>`).join('')}</div>`;
   }
   function viewLogin() {
-    const su = loginMode === 'signup';
+    const m = loginMode;
+    const google = NATIVE && Android.chooseGoogleAccount ? `<div class="or"><span>${t('or')}</span></div><button class="btn google full" type="button" data-act="google"><span class="g-logo">G</span> ${t('google_login')}</button><p class="small muted center">${t('google_note')}</p>` : '';
     return `<div class="login">
       ${langPicker()}
       <div class="logo">🏋️‍♂️</div>
       <h1>${t('app')}</h1><p class="muted">${t('tagline')}</p>
-      <form id="authForm" class="card" autocomplete="off">
-        <h2>${t(su ? 'signup' : 'login')}</h2>
-        <label>${t('username')}<input name="u" required autocapitalize="none" maxlength="30"></label>
-        <label>${t('password')}<input name="p" type="password" required></label>
-        ${su ? `<label>${t('password2')}<input name="p2" type="password" required></label>` : ''}
-        <p class="err" id="authErr"></p>
-        <button class="btn primary big" type="submit">${t(su ? 'signup' : 'login')}</button>
-        <button class="link" type="button" data-act="toggleAuth">${t(su ? 'have_account' : 'no_account')}</button>
-        <p class="small muted">🔒 ${t('local_note')}</p>
+      <form id="authForm" class="card" autocomplete="off" novalidate>
+        ${m === 'recover' ? `<h2>🔑 ${t('forgot')}</h2><p class="small muted">${t('recover_info')}</p>` : `<div class="seg"><button type="button" data-act="authMode" data-m="login" class="${m === 'login' ? 'on' : ''}">${t('login')}</button><button type="button" data-act="authMode" data-m="signup" class="${m === 'signup' ? 'on' : ''}">${t('signup')}</button></div>`}
+        <label>${t('user_or_email')}<input name="u" required autocapitalize="none" autocomplete="username" maxlength="80" inputmode="email"></label>
+        ${m === 'recover' ? `<label>${t('recovery_code')}<input name="code" required autocapitalize="characters" placeholder="XXXX-XXXX-XXXX-XXXX"></label>` : ''}
+        <label>${t(m === 'recover' ? 'new_password' : 'password')}<input name="p" type="password" required autocomplete="${m === 'login' ? 'current-password' : 'new-password'}"></label>
+        ${m !== 'login' ? `<div class="pw-meter"><i id="pwBar"></i></div><p class="small muted" id="pwHint">${t('pw_rules')}</p><label>${t('password2')}<input name="p2" type="password" required autocomplete="new-password"></label>` : ''}
+        <p class="err" id="authErr" role="alert"></p>
+        <button class="btn primary big full" type="submit">${t(m === 'signup' ? 'signup' : m === 'recover' ? 'reset_pw' : 'login')}</button>
+        ${m === 'login' ? `<button class="link center-link" type="button" data-act="authMode" data-m="recover">${t('forgot')}</button>` : ''}
+        ${m === 'recover' ? `<button class="link center-link" type="button" data-act="authMode" data-m="login">← ${t('login')}</button>` : ''}
+        ${m !== 'recover' ? google : ''}
+        <p class="small muted sec-note">🔒 ${t('local_note_v3')}</p>
       </form></div>`;
   }
   function bindLogin() {
-    $('#authForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      const u = fd.get('u').trim(), p = fd.get('p');
-      const err = $('#authErr');
-      try {
-        if (u.length < 3) throw t('err_user');
-        if (p.length < 6) throw t('err_pass');
-        let k;
-        if (loginMode === 'signup') {
-          if (p !== fd.get('p2')) throw t('err_match');
-          k = await signup(u, p);
-        } else k = await login(u, p);
-        openSession(k);
-        stack = [[D.profile ? 'home' : 'me']];
-        render();
-      } catch (x) { err.textContent = typeof x === 'string' ? x : x.message; }
+    const f = $('#authForm');
+    const pw = f.querySelector('[name=p]');
+    if (loginMode !== 'login') pw.oninput = () => {
+      const st = Sec.strength(pw.value, f.querySelector('[name=u]').value);
+      $('#pwBar').style.width = (st.score + 1) * 20 + '%';
+      $('#pwBar').className = 's' + st.score;
+      $('#pwHint').textContent = st.issues.length ? st.issues.map((i) => t(i)).join(' ') : t('pw_ok');
     };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(f);
+      const u = String(fd.get('u') || '').trim(), p = String(fd.get('p') || '');
+      const err = $('#authErr');
+      const btn = f.querySelector('button[type=submit]');
+      btn.disabled = true; err.textContent = '';
+      try {
+        let code = null;
+        if (loginMode === 'login') {
+          if (!u || !p) throw t('err_login');
+          code = await login(u, p);
+        } else {
+          if (!validName(u)) throw t(u.includes('@') ? 'err_email' : 'err_user');
+          const st = Sec.strength(p, u);
+          if (st.issues.length) throw st.issues.map((i) => t(i)).join(' ');
+          if (p !== fd.get('p2')) throw t('err_match');
+          if (loginMode === 'signup') code = await signup(u, p);
+          else await recoverAccount(u, fd.get('code'), p);
+        }
+        afterLogin(code);
+      } catch (x) { err.textContent = typeof x === 'string' ? x : t('err_generic'); btn.disabled = false; }
+    };
+  }
+  function afterLogin(recoveryCode) {
+    loginMode = 'login';
+    W = D.activeW || null;
+    stack = [[!D.prefs.mode ? 'mode' : D.profile ? 'home' : 'me']];
+    render();
+    if (recoveryCode) showRecoveryCode(recoveryCode);
+  }
+  function showRecoveryCode(code) {
+    openModal(`<div class="sheet-handle"></div><h2>🔑 ${t('recovery_title')}</h2><p>${t('recovery_save')}</p>
+      <div class="rec-code" dir="ltr">${esc(code)}</div>
+      <div class="row"><button class="btn" data-act="copy" data-v="${esc(code)}">📋 ${t('copy')}</button></div>
+      <p class="small muted">${t('recovery_why')}</p>
+      <button class="btn primary big full" data-act="closeModal">${t('recovery_done')}</button>`);
+  }
+
+  // ---- app lock when coming back after a while (biometric / PIN)
+  let pausedAt = 0;
+  async function lockIfNeeded() {
+    if (!user || !pausedAt || Date.now() - pausedAt < 60000) return;
+    const u = users()[user];
+    if (!u || !u.lock || !NATIVE || !Android.biometricAvailable || !Android.biometricAvailable()) return;
+    $('#lock').hidden = false;
+    const ok = await nativeAsk((cb) => Android.authenticate(t('unlock_title'), cb));
+    if (ok) $('#lock').hidden = true; else { logout(); $('#lock').hidden = true; stack = [['home']]; render(); }
   }
 
   // ------------------------------------------------------------------ views: home
@@ -445,19 +646,41 @@
         <div class="row"><button class="btn primary big" data-act="startPlan">▶ ${t('start_workout')}</button><button class="btn" data-tab="train">${t('change_focus')}</button></div>`;
     } else planHtml = `<p>${P.done ? '✅ ' + t('done_today') : '🧘 ' + t('rest_day')}</p><button class="btn" data-tab="train">${t('change_focus')}</button>`;
     const tomorrow = P.tomorrow ? P.tomorrow.map((m) => esc(L(MU[m].name).split(' (')[0])).join(I18N.lang === 'ar' ? '، ' : ', ') : t('rest_day');
-    return `${header(t('hello') + ', ' + displayName() + ' 👋', false)}
+    const progCard = (() => {
+      if (!D.profile || mode() === 'healthy') return '';
+      if (!D.program) return `<button class="card linkcard prog-cta" data-act="openProgram">📅 <b>${t('prog_cta')}</b><br><small class="muted">${t('prog_cta_d')}</small></button>`;
+      const nx = progNext();
+      const ph = Program.PHASES[nx.week.phase - 1];
+      return `<section class="card hero"><div class="hero-bg"></div><small>📅 ${t('program')} · ${t('week')} ${nx.week.w}/16 · ${esc(L(ph.name))}${nx.week.deload ? ' · ' + t('deload') : ''}</small>
+        ${nx.session ? `<h2>${esc(L(nx.session.name) || nx.session.name)}</h2><ol class="plan-list">${nx.session.items.map((it) => `<li><button class="link" data-act="ex" data-id="${it.id}">${esc(L(EX[it.id].name))}</button> <span class="small muted">${repsTxt(it)}</span></li>`).join('')}</ol>
+          ${(nx.session.cardio || []).map((c) => `<p class="small">🏃 ${esc(L(Program.CARDIO[c.kind]))} — ${c.min} min</p>`).join('')}
+          <div class="row"><button class="btn primary big" data-act="startProg" data-w="${nx.week.w}" data-key="${nx.session.key}">▶ ${t('start_workout')}</button><button class="btn" data-act="openProgram">${t('see_program')}</button></div>`
+        : `<p>✅ ${t('week_done')}</p><button class="btn" data-act="openProgram">${t('see_program')}</button>`}</section>`;
+    })();
+    const healthCard = (() => {
+      if (mode() === 'coach') return '';
+      const log = (D.health || []).slice().sort((a, b) => b.t - a.t);
+      const latest = {}; for (const e of log) if (!latest[e.type]) latest[e.type] = e;
+      const r = Health.readiness(log);
+      return `<button class="card linkcard health-cta" data-tab="health"><b>🩺 ${t('health')}</b>${r ? ` · ${{ go: '🟢', light: '🟡', rest: '🔴' }[r]} ${t('ready_' + r)}` : ''}
+        <div class="mini-vitals">${['bp', 'hr', 'glucose', 'sleep'].map((k) => `<span>${Health.TYPES[k].icon} ${latest[k] ? esc(hValue(latest[k])) : '—'}</span>`).join('')}</div><small class="muted">${t('add_measure')} →</small></button>`;
+    })();
+    const trainCard = D.program && mode() !== 'healthy' ? '' : `<section class="card ${mode() === 'healthy' ? '' : 'hero'}">${mode() === 'healthy' ? '' : '<div class="hero-bg"></div>'}<h2>${t(mode() === 'healthy' ? 'move_today' : 'today_plan')}</h2>${planHtml}<p class="small muted">📅 ${t('tomorrow')} : ${tomorrow}</p></section>`;
+    const foodCard = `<section class="card ${mode() === 'healthy' ? 'hero food-hero' : ''}">${mode() === 'healthy' ? '<div class="hero-bg"></div>' : ''}<h2>${t('today_food')}</h2>
+        ${b ? `<div class="food-sum">${ring(tot.kcal, b.kcal + dayBurn(), t('kcal_left'))}<div class="macros">${macroBar('protein', tot.p, b.protein)}${macroBar('carbs', tot.c, b.carbs)}${macroBar('fat', tot.f, b.fat)}${macroBar('fiber', tot.fiber, b.fiber)}</div></div>${dayBurn() ? `<p class="small burn">🔥 +${dayBurn()} ${t('burned')}</p>` : ''}` : `<p>${t('fill_profile')}</p>`}
+        <div class="row"><button class="btn primary" data-act="photo" data-src="camera">📸 ${t('scan_food')}</button></div></section>`;
+    const order = mode() === 'healthy' ? [foodCard, healthCard, trainCard] : mode() === 'pro' ? [progCard, trainCard, healthCard, foodCard] : [progCard, trainCard, foodCard];
+    return `<header class="top home-top"><h1>${t('hello')}, ${esc(displayName())} 👋</h1><button class="avatar" data-tab="me" aria-label="${t('profile')}">${esc(String(displayName()).slice(0, 1).toUpperCase())}</button></header>
+      <p class="mode-pill">${MODES.find((m) => m[0] === mode())[1]} ${t(MODES.find((m) => m[0] === mode())[2])}</p>
       <div class="stats">
         <div class="stat"><b>${streak()}</b><span>🔥 ${t('streak')}</span></div>
         <div class="stat"><b>${sessionsThisWeek()}/${D.profile?.days || 3}</b><span>🏋️ ${t('this_week')}</span></div>
       </div>
-      <section class="card hero"><div class="hero-bg"></div><h2>${t('today_plan')}</h2>${planHtml}<p class="small muted">📅 ${t('tomorrow')} : ${tomorrow}</p></section>
-      <section class="card"><h2>${t('today_food')}</h2>
-        ${b ? `<div class="food-sum">${ring(tot.kcal, b.kcal + dayBurn(), t('kcal_left'))}<div class="macros">${macroBar('protein', tot.p, b.protein)}${macroBar('carbs', tot.c, b.carbs)}${macroBar('fat', tot.f, b.fat)}${macroBar('fiber', tot.fiber, b.fiber)}</div></div>${dayBurn() ? `<p class="small burn">🔥 +${dayBurn()} ${t('burned')}</p>` : ''}` : `<p>${t('fill_profile')}</p>`}
-        <div class="row"><button class="btn primary" data-act="photo" data-src="camera">📸 ${t('scan_food')}</button></div></section>
-      <section class="card"><h2>${t('recovery')}</h2>
+      ${order.join('')}
+      ${mode() === 'healthy' ? '' : `<section class="card"><h2>${t('recovery')}</h2>
         ${BodyMap.render({ fill: (g) => recColor(P.st[g]), front: t('front'), back: t('back_side') })}
         <p class="small muted center">${t('heatmap_hint')}</p>
-        <details><summary class="small">${t('weekly_volume')}</summary>${recoveryGrid(P.st)}</details></section>
+        <details><summary class="small">${t('weekly_volume')}</summary>${recoveryGrid(P.st)}</details></section>`}
       <section class="card tip"><h2>💡 ${t('tip_day')}</h2><p>${esc(L(tip))}</p></section>`;
   }
   const macroBar = (k, v, max) => `<div class="mb"><div class="mb-top"><span>${t(k)}</span><span dir="ltr">${Math.round(v)} / ${Math.round(max)} g</span></div><div class="bar"><i style="width:${Math.min(100, (100 * v) / (max || 1))}%"></i></div></div>`;
@@ -501,13 +724,23 @@
   }
 
   let stopAnim = null;
+  const anim = { yaw: 22, pitch: 12, speed: 1, paused: false, steps: false, ex: null };
+  function renderSteps() {
+    const box = $('#stepsBox'); if (!box || !anim.ex) return;
+    const labels = [t('step_start'), t('step_mid'), t('step_end')];
+    box.innerHTML = Figure.steps(EX[anim.ex], anim).map((svg, i) => `<figure><b>${i + 1}</b>${svg}<figcaption>${labels[i]}</figcaption></figure>`).join('');
+  }
   function viewExercise(id) {
     const e = EX[id];
     const rx = prescription(e);
     const ld = lastDone(id);
     const q = encodeURIComponent(L(e.name) + ' ' + ({ fr: 'exécution correcte', en: 'proper form', ar: 'الطريقة الصحيحة' }[I18N.lang]));
     return `${header(L(e.name))}
-      <div class="card demo"><svg id="anim" class="fig big" viewBox="0 0 200 150"></svg><p class="small muted center">${t('demo')}</p></div>
+      <div class="card demo"><svg id="anim" class="fig big" viewBox="0 0 200 150"></svg>
+        <div class="seg view-seg">${[[0, 'view_profile'], [35, 'view_34'], [90, 'view_front'], [-90, 'view_back']].map(([v, k]) => `<button data-act="yaw" data-v="${v}" class="${Math.round(anim.yaw) === v ? 'on' : ''}">${t(k)}</button>`).join('')}</div>
+        <div class="row ctl-row"><button class="btn sm" data-act="animPause">${anim.paused ? '▶ ' + t('play') : '⏸ ' + t('pause')}</button><button class="btn sm" data-act="animSpeed">${anim.speed < 1 ? '🐢 0.4×' : '1×'}</button><button class="btn sm" data-act="animSteps">👣 ${t('steps_view')}</button></div>
+        <p class="small muted center">↔️ ${t('drag_hint')}</p>
+        <div id="stepsBox" class="steps-box" ${anim.steps ? '' : 'hidden'}></div></div>
       <section class="card"><h2>🎯 ${t('targets')}</h2>
         <div class="chips"><span class="chip on">${MU[e.group].icon} ${esc(L(MU[e.group].name))}</span>${e.second.map((m) => `<span class="chip sec">${esc(short(m))}</span>`).join('')}</div>
         <div class="mini-map">${BodyMap.render({ fill: (g) => (g === e.group ? 'var(--bm-sel)' : e.second.includes(g) ? 'var(--bm-sec)' : 'var(--bm-idle)') })}</div></section>
@@ -524,15 +757,19 @@
 
   // ------------------------------------------------------------------ views: workout
   let W = null; // active workout {ex:[{id, sets:[{kg,reps,done}]}]}
-  function newWorkout(ids) {
-    W = { start: Date.now(), ex: ids.map((id) => {
-      const rx = prescription(EX[id]);
+  function newWorkout(ids, prog) {
+    // ids: exercise ids, or programme items {id, sets, reps|hold, rest, rir}
+    W = { start: Date.now(), prog: prog || null, ex: ids.map((x) => {
+      const it = typeof x === 'string' ? null : x;
+      const id = it ? it.id : x;
+      const rx = it ? { sets: it.sets, reps: it.reps, hold: it.hold, rest: it.rest || 60, rir: it.rir } : prescription(EX[id]);
       const ld = lastDone(id);
-      return { id, sets: Array.from({ length: rx.sets }, (_, i) => ({ kg: ld?.sets[i]?.kg ?? ld?.sets[0]?.kg ?? '', reps: '', done: false })) };
+      return { id, rx: it ? rx : null, sets: Array.from({ length: rx.sets }, (_, i) => ({ kg: ld?.sets[i]?.kg ?? ld?.sets[0]?.kg ?? '', reps: '', done: false })) };
     }) };
-    store.set('fc_w_' + user, W);
+    D.activeW = W; saveData();
     go('workout');
   }
+  const rxOf = (x) => x.rx || prescription(EX[x.id]);
   function overloadHint(id) {
     const ld = lastDone(id); if (!ld) return '';
     const rx = prescription(EX[id]);
@@ -541,13 +778,13 @@
     return `<p class="small hint">📈 ${t('progress_hint', { x: esc(txt) })}${top ? '<br>⬆️ ' + t('increase_load') : ''}</p>`;
   }
   function viewWorkout() {
-    if (!W) W = store.get('fc_w_' + user, null);
+    if (!W) W = D.activeW || null;
     if (!W) return `${header(t('workout'))}<p>—</p>`;
     return `${header(t('workout'))}
       <p class="card small">🔥 ${t('warmup')}</p>
       ${W.ex.map((x, i) => {
-        const e = EX[x.id]; const rx = prescription(e);
-        return `<section class="card wex"><div class="wex-head">${Figure.still(e)}<div><button class="link" data-act="ex" data-id="${x.id}"><b>${esc(L(e.name))}</b></button><div class="small muted">${rxText(rx)}</div></div></div>
+        const e = EX[x.id]; const rx = rxOf(x);
+        return `<section class="card wex"><div class="wex-head">${Figure.still(e)}<div><button class="link" data-act="ex" data-id="${x.id}"><b>${esc(L(e.name))}</b></button><div class="small muted">${rxText(rx)}${rx.rir != null ? ` · RIR ${rx.rir}` : ''}</div></div></div>
           ${overloadHint(x.id)}
           <table class="sets"><tr><th>#</th>${e.hold ? '' : `<th>${t('weight_kg')}</th>`}<th>${e.hold ? t('seconds') : t('reps_done')}</th><th>✓</th></tr>
           ${x.sets.map((s, j) => `<tr class="${s.done ? 'done' : ''}"><td>${j + 1}</td>${e.hold ? '' : `<td><input inputmode="decimal" data-w="${i}" data-s="${j}" data-k="kg" value="${esc(s.kg)}" placeholder="0"></td>`}<td><input inputmode="numeric" data-w="${i}" data-s="${j}" data-k="reps" value="${esc(s.reps)}" placeholder="${rx.hold ? rx.hold : rx.reps[0] + '-' + rx.reps[1]}"></td><td><button class="check ${s.done ? 'on' : ''}" data-act="setDone" data-w="${i}" data-s="${j}">✓</button></td></tr>`).join('')}
@@ -578,7 +815,8 @@
       D.workouts.push({ time: Date.now(), start: W.start, ex, kcal, min: Math.round(min) });
       saveData();
     }
-    W = null; store.del('fc_w_' + user);
+    if (W.prog && D.program) { D.program.done = D.program.done || {}; D.program.done[W.prog] = Date.now(); }
+    W = null; D.activeW = null; saveData();
     clearInterval(restTimer); $('#rest').hidden = true;
     toast(t('workout_saved'));
     tab('home');
@@ -756,7 +994,10 @@
     const ph = foodState.photo;
     if (!ph) return '';
     const items = ph.items || [];
-    const whole = matchLabels(ph.labels || []);
+    const both = (x) => [...(x.foods || []).map((f) => ({ text: f.text, conf: f.conf + 0.5 })), ...(x.labels || [])];
+    const whole = matchLabels(both(ph));
+    // dishes recognised by the offline food model (Google AIY Food V1)
+    const dishes = (x) => (x.foods || []).filter((f) => f.conf >= 0.12).slice(0, 3).map((f) => `<button class="chip dish" data-act="dishSearch" data-v="${esc(f.text)}">🍽️ ${esc(f.text)} <small>${Math.round(f.conf * 100)}%</small></button>`).join('');
     const boxes = items.map((it, i) => `<span class="box" style="left:${it.box[0] * 100}%;top:${it.box[1] * 100}%;width:${it.box[2] * 100}%;height:${it.box[3] * 100}%"><b>${i + 1}</b></span>`).join('');
     const chips = (m) => m.foods.slice(0, 5).map((id) => `<button class="chip" data-act="plateAdd" data-id="${id}">＋ ${esc(L(FOOD[id].name))}</button>`).join('') +
       m.cats.slice(0, 2).map((c) => `<button class="chip ghost" data-act="fcat" data-id="${c}">${FOOD_CATS[c].icon} ${esc(L(FOOD_CATS[c]))}…</button>`).join('');
@@ -772,8 +1013,9 @@
       <div class="photo-wrap"><img src="${ph.img}" alt="">${boxes}</div>
       ${aiHtml}
       ${items.length ? `<p class="small">${t('items_found', { n: items.length })}</p>` : ''}
-      ${items.map((it, i) => { const m = matchLabels(it.labels || []); return `<div class="item-row"><img src="${it.thumb}" alt=""><div><b>${t('item')} ${i + 1}</b> <span class="small muted">${(it.labels || []).slice(0, 3).map((l) => esc(l.text)).join(', ')}</span><div class="chips">${chips(m) || `<span class="small muted">${t('not_found')}</span>`}</div></div></div>`; }).join('')}
-      <div class="item-row"><span class="fr-ic">🖼️</span><div><b>${t('whole_photo')}</b> <span class="small muted">${(ph.labels || []).slice(0, 4).map((l) => esc(l.text)).join(', ')}</span><div class="chips">${chips(whole) || `<span class="small muted">${t('not_found')}</span>`}</div></div></div>
+      ${items.map((it, i) => { const m = matchLabels(both(it)); return `<div class="item-row"><img src="${it.thumb}" alt=""><div><b>${t('item')} ${i + 1}</b> <span class="small muted">${(it.labels || []).slice(0, 3).map((l) => esc(l.text)).join(', ')}</span><div class="chips">${dishes(it)}</div><div class="chips">${chips(m) || `<span class="small muted">${t('not_found')}</span>`}</div></div></div>`; }).join('')}
+      <div class="item-row"><span class="fr-ic">🖼️</span><div><b>${t('whole_photo')}</b> <span class="small muted">${(ph.labels || []).slice(0, 4).map((l) => esc(l.text)).join(', ')}</span><div class="chips">${dishes(ph)}</div><div class="chips">${chips(whole) || `<span class="small muted">${t('not_found')}</span>`}</div></div></div>
+      ${(ph.foods || []).length ? `<p class="small muted">🧠 ${t('food_model_note')}</p>` : ''}
       <p class="small muted">${t('photo_note')}</p></section>`;
   }
 
@@ -996,8 +1238,9 @@
     const b = body();
     const opt = (name, val, items) => items.map(([v, k]) => `<option value="${v}" ${String(val) === String(v) ? 'selected' : ''}>${t(k)}</option>`).join('');
     const conds = [['diabetes', 'c_diabetes'], ['hyper', 'c_hyper'], ['chol', 'c_chol'], ['knee', 'c_knee'], ['back', 'c_back']];
-    return `${header(t('profile'), false)}
+    return `${header(t('profile'), stack.length > 1)}
       <div class="row between"><span>👤 <b>${esc(displayName())}</b></span><button class="btn sm" data-act="logout">${t('logout')}</button></div>
+      <div class="quick-links"><button class="card linkcard" data-act="openProgram">📅 ${t('program')}</button><button class="card linkcard" data-tab="health">🩺 ${t('health')}</button></div>
       <section class="card"><h2>🌐 ${t('language')}</h2>${langPicker()}</section>
       ${b ? bodyReport(b, p) : ''}
       <form id="profForm" class="card form"><h2>📝 ${t('profile')}</h2><p class="small muted">${t('profile_intro')}</p>
@@ -1021,6 +1264,7 @@
       <section class="card ai-card"><h2>✨ ${t('ai_title')}</h2><p class="small muted">${t('ai_desc')}</p>
         ${D.prefs.aiKey ? `<div class="row between"><span class="ok-txt">${t('ai_on')} (…${esc(D.prefs.aiKey.slice(-4))})</span><button class="btn sm" data-act="aiKeyDel">${t('ai_remove')}</button></div>`
           : `<form id="aiForm" class="bc-row"><input id="aiKeyIn" type="password" autocomplete="off" placeholder="sk-ant-…"><button class="btn primary" type="submit">${t('save')}</button></form>`}</section>
+      ${settingsCard()}
       <button class="card linkcard" data-act="history">📜 ${t('history')} →</button>
       <button class="card linkcard" data-act="science">🔬 ${t('science')} →</button>
       <section class="card tip"><h2>🩺 ${t('advice')}</h2><ul>${ADVICE.map((a) => `<li>${esc(L(a))}</li>`).join('')}</ul></section>
@@ -1067,10 +1311,238 @@
     return `${header(t('science'))}${SCIENCE.map((s) => `<section class="card"><h2>${esc(L(s.title))}</h2><p>${esc(L(s.text))}</p></section>`).join('')}<p class="small muted disclaimer">⚕️ ${t('disclaimer')}</p>`;
   }
 
+  // ------------------------------------------------------------------ theme & app modes
+  function applyTheme() {
+    const th = store.get('fc_theme', 'auto');
+    if (th === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = th;
+  }
+  const MODES = [
+    ['healthy', '🥗', 'mode_healthy', 'mode_healthy_d'],
+    ['coach', '🏋️', 'mode_coach', 'mode_coach_d'],
+    ['pro', '⭐', 'mode_pro', 'mode_pro_d'],
+  ];
+  const mode = () => (D && D.prefs.mode) || 'coach';
+  function viewMode() {
+    return `${header(t('choose_mode'), false)}<p class="muted">${t('choose_mode_d')}</p>
+      <div class="mode-list">${MODES.map(([id, ic, n, d]) => `<button class="mode-card ${mode() === id && D.prefs.mode ? 'on' : ''} m-${id}" data-act="setMode" data-id="${id}"><span class="mode-ic">${ic}</span><span><b>${t(n)}</b><small>${t(d)}</small></span></button>`).join('')}</div>`;
+  }
+
+  // ------------------------------------------------------------------ 4-month programme
+  const SLOT_OK = (id) => EX[id] && canDo(EX[id]) && !avoid(EX[id]);
+  function progCtx() {
+    return {
+      level: LEVEL(),
+      ex: (id) => EX[id],
+      pick(slot, variant, phase, used) {
+        const pool = Program.SLOTS[slot].filter((id) => SLOT_OK(id) && !used.has(id) && (EX[id].level <= LEVEL() + (phase >= 3 ? 1 : 0)) && !(D.prefs.swaps[id] >= 3));
+        if (!pool.length) return null;
+        return EX[pool[(variant + Math.floor((phase - 1) / 2)) % pool.length]];
+      },
+    };
+  }
+  const progWeek = (w) => Program.week(D.program, w, progCtx());
+  function progCurrentWeek() {
+    const p = D.program; if (!p) return 0;
+    return Math.max(1, Math.min(Program.WEEKS, Math.floor((Date.now() - p.start) / (7 * DAY)) + 1));
+  }
+  const progDone = (key) => !!(D.program && D.program.done && D.program.done[key]);
+  function progNext() {
+    if (!D.program) return null;
+    const w = progCurrentWeek();
+    const wk = progWeek(w);
+    const s = wk.sessions.find((x) => !progDone(x.key));
+    return { week: wk, session: s || null };
+  }
+  function mondayOf(d = new Date()) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x.getTime(); }
+  function createProgram(type) {
+    const p = D.profile || {};
+    D.program = { type, start: mondayOf(), goal: p.goal || 'fit', days: +(p.days || 3), volume: 1, done: {}, checkins: {}, tests: {}, manual: type === 'manual' ? defaultManual() : null, deload: true };
+    saveData();
+  }
+  function defaultManual() {
+    return [{ name: t('day') + ' 1', items: [] }, { name: t('day') + ' 2', items: [] }, { name: t('day') + ' 3', items: [] }];
+  }
+  const repsTxt = (it) => (it.hold ? `${it.sets} × ${it.hold}${t('seconds')}` : `${it.sets} × ${it.reps[0]}–${it.reps[1]}`);
+  function sessionHtml(s, w, open) {
+    const done = progDone(s.key);
+    return `<details class="sess ${done ? 'done' : ''}" ${open ? 'open' : ''}><summary><span class="sess-st">${done ? '✅' : '▶'}</span><b>${esc(L(s.name) || s.name)}</b><span class="small muted">${s.items.length} ${t('exercises_short')}</span></summary>
+      <ol class="sess-list">${s.items.map((it) => `<li><button class="link" data-act="ex" data-id="${it.id}">${esc(L(EX[it.id].name))}</button><span class="small muted"> ${repsTxt(it)}${it.rir != null ? ` · RIR ${it.rir}` : ''}${it.rest ? ` · ${t('rest')} ${it.rest}${t('seconds')}` : ''}${it.tempo ? ` · tempo ${it.tempo}` : ''}</span></li>`).join('')}
+      ${(s.cardio || []).map((c) => `<li class="cardio">🏃 ${esc(L(Program.CARDIO[c.kind]))} — ${c.min} min</li>`).join('')}</ol>
+      ${s.items.length ? `<button class="btn ${done ? '' : 'primary'} full" data-act="startProg" data-w="${w}" data-key="${s.key}">${done ? '↻ ' + t('redo') : '▶ ' + t('start_workout')}</button>` : ''}</details>`;
+  }
+  let progView = 0; // week shown in the programme page (0 = current)
+  function viewProgram() {
+    const p = D.program;
+    if (!p) {
+      return `${header(t('program'), stack.length > 1)}
+        <p class="muted">${t('program_intro')}</p>
+        <button class="choice-card" data-act="progCreate" data-type="auto"><span class="ch-ic">🧠</span><span><b>${t('prog_auto')}</b><small>${t('prog_auto_d')}</small></span></button>
+        <button class="choice-card" data-act="progCreate" data-type="manual"><span class="ch-ic">✍️</span><span><b>${t('prog_manual')}</b><small>${t('prog_manual_d')}</small></span></button>
+        <section class="card tip"><h2>🔬 ${t('prog_science')}</h2><ul>${Program.PHASES.map((ph, i) => `<li><b>${t('weeks')} ${i * 4 + 1}–${i * 4 + 4} · ${esc(L(ph.name))}</b> — ${esc(L(ph.info))}</li>`).join('')}</ul></section>`;
+    }
+    const cw = progCurrentWeek();
+    const w = progView || cw;
+    const wk = progWeek(w);
+    const ph = Program.PHASES[wk.phase - 1];
+    const nDone = Object.keys(p.done || {}).length;
+    const total = Array.from({ length: Program.WEEKS }, (_, i) => progWeek(i + 1).sessions.filter((s) => s.items.length).length).reduce((a, b) => a + b, 0);
+    const ci = p.checkins[cw - 1];
+    return `${header(t('program'), stack.length > 1)}
+      <section class="card hero"><div class="hero-bg"></div><small>${p.type === 'auto' ? '🧠 ' + t('prog_auto') : '✍️ ' + t('prog_manual')}</small>
+        <h2>${t('week')} ${cw} / ${Program.WEEKS}</h2><div class="bar light"><i style="width:${(100 * nDone) / Math.max(1, total)}%"></i></div>
+        <p class="small">${nDone} / ${total} ${t('sessions_done')}${p.volume !== 1 ? ` · ${t('volume')} ${Math.round(p.volume * 100)}%` : ''}</p></section>
+      ${cw > 1 && !ci && p.type === 'auto' ? `<section class="card checkin"><h2>📝 ${t('checkin')}</h2><p class="small muted">${t('checkin_d')}</p>
+        <form id="ciForm">${[['fatigue', 'ci_fatigue'], ['soreness', 'ci_soreness'], ['sleepq', 'ci_sleep']].map(([n, k]) => `<label>${t(k)}<div class="scale">${[1, 2, 3, 4, 5].map((v) => `<label class="sc"><input type="radio" name="${n}" value="${v}" ${v === 3 ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div></label>`).join('')}
+        <label>${t('weight')}<input name="weight" type="number" step="0.1" inputmode="decimal" value="${D.profile?.weight || ''}"></label>
+        <button class="btn primary full" type="submit">${t('save')}</button></form></section>` : ''}
+      ${ci && ci.msg ? `<p class="card small adjust">🤖 ${esc(ci.msg)}</p>` : ''}
+      <div class="week-nav"><button class="icon" data-act="progWeek" data-d="-1" ${w <= 1 ? 'disabled' : ''}>‹</button><div><b>${t('week')} ${w}</b>${w === cw ? ` <span class="badge">${t('this_week_b')}</span>` : ''}<div class="small muted">${esc(L(ph.name))}${wk.deload ? ' · 🧘 ' + t('deload') : ''}</div></div><button class="icon" data-act="progWeek" data-d="1" ${w >= Program.WEEKS ? 'disabled' : ''}>›</button></div>
+      <p class="small muted">${esc(L(ph.info))}</p>
+      <div class="phase-strip">${Array.from({ length: Program.WEEKS }, (_, i) => `<button data-act="progGoto" data-w="${i + 1}" class="ps ph${Program.phaseOf(i + 1)} ${i + 1 === w ? 'on' : ''} ${i + 1 < cw ? 'past' : ''} ${Program.isDeload(i + 1) ? 'dl' : ''}">${i + 1}</button>`).join('')}</div>
+      ${wk.sessions.map((s, i) => sessionHtml(s, w, w === cw && i === wk.sessions.findIndex((x) => !progDone(x.key)))).join('')}
+      ${wk.test ? testCard(w) : ''}
+      <div class="row">${p.type === 'manual' ? `<button class="btn" data-act="progEdit">✏️ ${t('edit_program')}</button>` : ''}<button class="btn" data-act="progReset">🔄 ${t('change_program')}</button></div>`;
+  }
+  function testCard(w) {
+    const r = (D.program.tests || {})[w] || {};
+    const base = (D.program.tests || {})[1] || {};
+    return `<section class="card"><h2>📊 ${t(w === 1 ? 'test_start' : 'test_end')}</h2><form id="testForm" data-w="${w}">${Program.TESTS.map((x) => `<label class="test-row"><span>${esc(L(x.name))}${w === 16 && base[x.id] ? ` <small class="muted">(${t('before')} : ${base[x.id]})</small>` : ''}</span><input name="${x.id}" type="number" inputmode="decimal" step="0.1" value="${r[x.id] ?? ''}"></label>`).join('')}
+      <button class="btn primary full" type="submit">${t('save')}</button></form></section>`;
+  }
+  function viewProgEdit() {
+    const m = D.program.manual;
+    return `${header(t('edit_program'))}<p class="small muted">${t('manual_hint')}</p>
+      ${m.map((d, i) => `<section class="card"><div class="row between"><input class="day-name" data-day="${i}" value="${esc(d.name)}"><button class="icon sm" data-act="dayDel" data-i="${i}">✕</button></div>
+        <ul class="man-list">${d.items.map((it, j) => `<li><span>${esc(L(EX[it.id].name))}</span><input type="number" inputmode="numeric" data-man="${i}:${j}:sets" value="${it.sets}" min="1" max="10"><span>×</span>${it.hold ? `<input type="number" data-man="${i}:${j}:hold" value="${it.hold}"><span>${t('seconds')}</span>` : `<input type="number" data-man="${i}:${j}:r0" value="${it.reps[0]}"><span>–</span><input type="number" data-man="${i}:${j}:r1" value="${it.reps[1]}">`}<button class="icon sm" data-act="manDel" data-i="${i}" data-j="${j}">✕</button></li>`).join('')}</ul>
+        <button class="btn sm" data-act="manAdd" data-i="${i}">＋ ${t('add_exercise')}</button></section>`).join('')}
+      <button class="btn full" data-act="dayAdd">＋ ${t('add_day')}</button>
+      <label class="check-l"><input type="checkbox" id="manDeload" ${D.program.deload !== false ? 'checked' : ''}> ${t('auto_deload')}</label>
+      <button class="btn primary big full" data-act="progSave">💾 ${t('save')}</button>`;
+  }
+  function pickExercise(day) {
+    const list = EXERCISES.filter(canDo);
+    openModal(`<div class="sheet-handle"></div><h2>${t('add_exercise')}</h2><input id="pickQ" class="search" placeholder="${t('search_ex')}">
+      <div id="pickList" class="food-list">${list.map((e) => `<button class="food-row" data-act="manPick" data-i="${day}" data-id="${e.id}"><span class="fr-ic">${MU[e.group].icon}</span><span class="fr-name">${esc(L(e.name))}<small class="muted">${esc(short(e.group))}</small></span></button>`).join('')}</div>`);
+    $('#pickQ').oninput = (ev) => {
+      const q = ev.target.value.toLowerCase();
+      app().ownerDocument.querySelectorAll('#pickList .food-row').forEach((r) => { r.hidden = q && !r.textContent.toLowerCase().includes(q); });
+    };
+  }
+  function checkinAdjust(ci) {
+    // fatigue / soreness high or poor sleep -> less volume ; everything done + fresh -> a bit more
+    const p = D.program;
+    const prevW = progCurrentWeek() - 1;
+    const prev = progWeek(prevW).sessions.filter((s) => s.items.length);
+    const completion = prev.length ? prev.filter((s) => progDone(s.key)).length / prev.length : 1;
+    let v = p.volume || 1, msg;
+    if (ci.fatigue >= 4 || ci.soreness >= 4 || ci.sleepq <= 2) { v = Math.max(0.7, v - 0.15); msg = t('adj_down'); }
+    else if (completion >= 0.99 && ci.fatigue <= 2 && ci.soreness <= 3) { v = Math.min(1.3, v + 0.1); msg = t('adj_up'); }
+    else if (completion < 0.6) { v = Math.max(0.8, v - 0.1); msg = t('adj_missed'); }
+    else msg = t('adj_keep');
+    p.volume = Math.round(v * 100) / 100;
+    ci.msg = msg + ` (${t('volume')} ${Math.round(p.volume * 100)}%)`;
+  }
+
+  // ------------------------------------------------------------------ health (doctor mode)
+  const HFORMS = {
+    bp: [['sys', 'h_sys', 'mmHg'], ['dia', 'h_dia', 'mmHg']], hr: [['val', 'h_bpm', 'bpm']], glucose: [['val', 'h_glu', 'g/L']],
+    spo2: [['val', 'h_spo2', '%']], weight: [['val', 'weight', 'kg']], waist: [['val', 'waist', 'cm']], sleep: [['val', 'h_sleep', 'h']], temp: [['val', 'h_temp', '°C']],
+  };
+  let hType = 'bp';
+  function hValue(e) {
+    if (e.type === 'bp') return `${e.v.sys}/${e.v.dia}`;
+    return String(e.v.val);
+  }
+  function hInterp(e) { return Health.interpret(e, D.profile); }
+  function viewHealth() {
+    const log = (D.health || []).slice().sort((a, b) => b.t - a.t);
+    const latest = {};
+    for (const e of log) if (!latest[e.type]) latest[e.type] = e;
+    const ready = Health.readiness(log);
+    const intake = {};
+    for (const k of Object.keys(D.food)) intake[k] = dayTotals(k).kcal;
+    const ad = Health.adaptiveTdee(log.filter((e) => e.type === 'weight'), intake);
+    const parq = D.prefs.parq;
+    return `${header(t('health'), stack.length > 1)}
+      ${ready ? `<section class="card ready r-${ready}"><h2>${{ go: '🟢', light: '🟡', rest: '🔴' }[ready]} ${t('ready_' + ready)}</h2><p class="small">${t('ready_' + ready + '_d')}</p></section>` : ''}
+      <section class="card"><h2>🩺 ${t('my_measures')}</h2><div class="vitals">${Object.keys(Health.TYPES).map((k) => { const e = latest[k]; const it = e ? hInterp(e) : null; return `<button class="vital ${it ? 'lv-' + it[0] : ''}" data-act="hType" data-id="${k}"><span>${Health.TYPES[k].icon}</span><b>${e ? esc(hValue(e)) : '—'}</b><small>${esc(L(Health.TYPES[k].name))}</small></button>`; }).join('')}</div></section>
+      <section class="card"><h2>➕ ${t('add_measure')}</h2>
+        <div class="chips scroll">${Object.keys(Health.TYPES).map((k) => `<button class="chip ${hType === k ? 'on' : ''}" data-act="hType" data-id="${k}">${Health.TYPES[k].icon} ${esc(L(Health.TYPES[k].name))}</button>`).join('')}</div>
+        <form id="hForm" class="h-form">${HFORMS[hType].map(([n, k, u]) => `<label>${t(k)} <small class="muted">(${u})</small><input name="${n}" type="number" step="0.01" inputmode="decimal" required></label>`).join('')}
+          ${hType === 'glucose' ? `<label>${t('h_when')}<select name="ctx"><option value="fasting">${t('h_fasting')}</option><option value="after">${t('h_after')}</option></select></label>` : ''}
+          <button class="btn primary full" type="submit">${t('save')}</button></form>
+        ${latest[hType] ? (() => { const it = hInterp(latest[hType]); return it[1] ? `<p class="remark lv-${it[0]}">${esc(L(it[1]))}</p>` : ''; })() : ''}
+        <ul class="h-hist">${log.filter((e) => e.type === hType).slice(0, 8).map((e) => { const it = hInterp(e); return `<li><span class="dot lv-${it[0]}"></span><b>${esc(hValue(e))}</b><span class="small muted">${new Date(e.t).toLocaleDateString(I18N.lang === 'ar' ? 'ar-TN' : I18N.lang)}${e.v.ctx === 'after' ? ' · ' + t('h_after') : ''}</span></li>`; }).join('')}</ul></section>
+      ${ad ? `<section class="card"><h2>🔥 ${t('real_metabolism')}</h2><p class="big-txt">${ad.tdee} kcal / ${t('per_day')}</p><p class="small muted">${t('real_metabolism_d', { i: ad.intake, s: ad.slopeWeek, n: ad.days })}</p></section>` : `<p class="small muted card">🔥 ${t('real_metabolism_need')}</p>`}
+      <section class="card"><h2>📋 ${t('parq_title')}</h2>${parq ? `<p class="${parq.yes ? 'remark lv-warn' : 'remark lv-ok'}">${t(parq.yes ? 'parq_yes' : 'parq_no')}</p><button class="btn sm" data-act="parqRedo">${t('redo')}</button>` : `<p class="small muted">${t('parq_d')}</p>
+        <form id="parqForm">${Health.PARQ.map((q, i) => `<div class="parq-q"><p>${i + 1}. ${esc(L(q))}</p><div class="seg"><label><input type="radio" name="q${i}" value="1" required> ${t('yes')}</label><label><input type="radio" name="q${i}" value="0"> ${t('no')}</label></div></div>`).join('')}<button class="btn primary full" type="submit">${t('save')}</button></form>`}</section>
+      <section class="card warn"><h2>🚨 ${t('red_flags')}</h2><ul>${Health.RED_FLAGS.map((r) => `<li>${esc(L(r))}</li>`).join('')}</ul><p><b>${t('red_flags_do')}</b></p></section>
+      <button class="btn full" data-act="healthReport">📄 ${t('health_report')}</button>
+      <p class="small muted disclaimer">⚕️ ${t('disclaimer')}</p>`;
+  }
+  function healthReport() {
+    const b = body();
+    const now = Date.now();
+    const last30 = (D.health || []).filter((e) => now - e.t < 30 * DAY);
+    const avg = (type, f) => { const xs = last30.filter((e) => e.type === type).map(f); return xs.length ? Math.round((xs.reduce((a, c) => a + c, 0) / xs.length) * 10) / 10 : null; };
+    const days = Object.keys(D.food).filter((k) => now - new Date(k).getTime() < 30 * DAY && (D.food[k] || []).length);
+    const kcal = days.length ? Math.round(days.reduce((a, k) => a + dayTotals(k).kcal, 0) / days.length) : null;
+    const prot = days.length ? Math.round(days.reduce((a, k) => a + dayTotals(k).p, 0) / days.length) : null;
+    const wk = D.workouts.filter((w) => now - w.time < 30 * DAY).length;
+    const lines = [
+      `FitCoach — ${t('health_report')} (${new Date().toLocaleDateString()})`,
+      `${t('profile')}: ${D.profile ? `${D.profile.age} ${t('years')}, ${D.profile.height} cm, ${D.profile.weight} kg` : '—'}`,
+      b ? `${t('bmi')}: ${round(b.bmi, 1)} (${t(b.bmiCat)})` : '',
+      avg('bp', (e) => e.v.sys) ? `${L(Health.TYPES.bp.name)}: ${avg('bp', (e) => e.v.sys)}/${avg('bp', (e) => e.v.dia)} mmHg (${t('avg30')})` : '',
+      avg('hr', (e) => e.v.val) ? `${L(Health.TYPES.hr.name)}: ${avg('hr', (e) => e.v.val)} bpm` : '',
+      avg('glucose', (e) => e.v.val) ? `${L(Health.TYPES.glucose.name)}: ${avg('glucose', (e) => e.v.val)} g/L` : '',
+      avg('sleep', (e) => e.v.val) ? `${L(Health.TYPES.sleep.name)}: ${avg('sleep', (e) => e.v.val)} h` : '',
+      `${t('workouts_30')}: ${wk}`,
+      kcal ? `${t('avg_intake')}: ${kcal} kcal, ${t('protein')} ${prot} g` : '',
+      D.prefs.parq ? `PAR-Q: ${D.prefs.parq.yes ? t('parq_yes_short') : 'OK'}` : '',
+    ].filter(Boolean).join('\n');
+    openModal(`<div class="sheet-handle"></div><h2>📄 ${t('health_report')}</h2><pre class="report">${esc(lines)}</pre>
+      <div class="row"><button class="btn primary" data-act="shareReport">📤 ${t('share')}</button><button class="btn" data-act="copy" data-v="${esc(lines)}">📋 ${t('copy')}</button></div>
+      <button class="btn full" data-act="closeModal">${t('close')}</button>`);
+    window.__report = lines;
+  }
+
+  // ------------------------------------------------------------------ settings (security, theme, mode)
+  function settingsCard() {
+    const u = users()[user] || {};
+    const th = store.get('fc_theme', 'auto');
+    const bio = NATIVE && Android.biometricAvailable && Android.biometricAvailable();
+    return `<section class="card"><h2>⚙️ ${t('settings')}</h2>
+      <label>${t('app_mode')}</label><div class="seg">${MODES.map(([id, ic, n]) => `<button data-act="setMode" data-id="${id}" data-stay="1" class="${mode() === id ? 'on' : ''}">${ic} ${t(n)}</button>`).join('')}</div>
+      <label>${t('theme')}</label><div class="seg">${[['auto', '🌗', 'theme_auto'], ['light', '☀️', 'theme_light'], ['dark', '🌙', 'theme_dark']].map(([v, ic, k]) => `<button data-act="theme" data-v="${v}" class="${th === v ? 'on' : ''}">${ic} ${t(k)}</button>`).join('')}</div></section>
+      <section class="card sec-card"><h2>🛡️ ${t('security')}</h2>
+        <p class="small muted">${t('security_d')}</p>
+        <ul class="sec-list"><li>✅ ${t('sec_enc')}</li><li>✅ ${t('sec_lockout')}</li><li>✅ ${t('sec_backup')}</li><li>✅ ${t('sec_https')}</li></ul>
+        <p class="small"><b>${t('account')} :</b> ${esc(u.email || displayName())} · ${u.kind === 'google' ? 'Google' : t('password')}</p>
+        ${bio ? `<label class="check-l"><input type="checkbox" data-act="secLock" ${u.lock ? 'checked' : ''}> 🔐 ${t('sec_bio')}</label>` : `<p class="small muted">🔐 ${t('sec_bio_na')}</p>`}
+        ${NATIVE ? `<label class="check-l"><input type="checkbox" data-act="secScreen" ${u.secure ? 'checked' : ''}> 🙈 ${t('sec_screen')}</label>` : ''}
+        ${u.kind === 'password' ? `<details><summary>${t('change_pw')}</summary><form id="pwForm"><label>${t('password')}<input name="old" type="password" required></label><label>${t('new_password')}<input name="n1" type="password" required></label><label>${t('password2')}<input name="n2" type="password" required></label><p class="err" id="pwErr"></p><button class="btn primary full" type="submit">${t('save')}</button></form></details>` : ''}
+        <details><summary class="danger">${t('delete_account')}</summary><p class="small">${t('delete_d')}</p><form id="delForm">${u.kind === 'password' ? `<label>${t('password')}<input name="p" type="password" required></label>` : ''}<p class="err" id="delErr"></p><button class="btn danger-btn full" type="submit">🗑️ ${t('delete_account')}</button></form></details>
+      </section>`;
+  }
+
   // ------------------------------------------------------------------ after-render hooks
   function after(view, arg) {
     if (stopAnim) { stopAnim(); stopAnim = null; }
-    if (view === 'exercise') stopAnim = Figure.animate($('#anim'), EX[arg]);
+    if (view === 'exercise') {
+      const svg = $('#anim');
+      stopAnim = Figure.animate(svg, EX[arg], anim);
+      if (anim.steps) renderSteps();
+      // drag horizontally to orbit around the mannequin
+      let dragX = null;
+      svg.addEventListener('pointerdown', (e) => { dragX = e.clientX; svg.setPointerCapture(e.pointerId); });
+      svg.addEventListener('pointermove', (e) => {
+        if (dragX == null) return;
+        anim.yaw = ((anim.yaw + (e.clientX - dragX) * 0.8 + 540) % 360) - 180; dragX = e.clientX;
+      });
+      const end = () => { if (dragX != null) { dragX = null; app().querySelectorAll('.view-seg button').forEach((b) => b.classList.toggle('on', +b.dataset.v === Math.round(anim.yaw))); if (anim.steps) renderSteps(); } };
+      svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', end);
+    }
     if (view === 'food') {
       const s = $('#foodSearch');
       s.oninput = () => {
@@ -1090,10 +1562,81 @@
     if (view === 'coach') { const sel = $('#coachSel'); sel.onchange = () => { coachEx = sel.value; render(); }; }
     if (view === 'workout') {
       app().querySelectorAll('input[data-w]').forEach((inp) => {
-        inp.onchange = () => { W.ex[inp.dataset.w].sets[inp.dataset.s][inp.dataset.k] = inp.value; store.set('fc_w_' + user, W); };
+        inp.onchange = () => { W.ex[inp.dataset.w].sets[inp.dataset.s][inp.dataset.k] = inp.value; D.activeW = W; saveData(); };
       });
     }
+    if (view === 'program') {
+      const ci = $('#ciForm');
+      if (ci) ci.onsubmit = (e) => {
+        e.preventDefault();
+        const fd = new FormData(ci);
+        const c = { fatigue: +fd.get('fatigue'), soreness: +fd.get('soreness'), sleepq: +fd.get('sleepq'), weight: +fd.get('weight') || null, t: Date.now() };
+        checkinAdjust(c);
+        D.program.checkins[progCurrentWeek() - 1] = c;
+        if (c.weight) { D.health.push({ t: Date.now(), type: 'weight', v: { val: c.weight } }); if (D.profile) D.profile.weight = c.weight; }
+        saveData(); render();
+      };
+      const tf = $('#testForm');
+      if (tf) tf.onsubmit = (e) => {
+        e.preventDefault();
+        const r = {};
+        for (const [k, v] of new FormData(tf)) if (v !== '') r[k] = +v;
+        D.program.tests[tf.dataset.w] = r; saveData(); toast(t('saved'));
+      };
+    }
+    if (view === 'progEdit') {
+      app().querySelectorAll('[data-man]').forEach((inp) => {
+        inp.onchange = () => {
+          const [i, j, k] = inp.dataset.man.split(':');
+          const it = D.program.manual[+i].items[+j];
+          const v = Math.max(1, Math.min(300, +inp.value || 1));
+          if (k === 'sets') it.sets = Math.min(10, v); else if (k === 'hold') it.hold = v; else it.reps[k === 'r0' ? 0 : 1] = v;
+        };
+      });
+      app().querySelectorAll('.day-name').forEach((inp) => { inp.onchange = () => { D.program.manual[+inp.dataset.day].name = inp.value.slice(0, 40); }; });
+    }
+    if (view === 'health') {
+      const hf = $('#hForm');
+      hf.onsubmit = (e) => {
+        e.preventDefault();
+        const fd = new FormData(hf);
+        const v = {};
+        for (const [k, val] of fd) v[k] = k === 'ctx' ? val : +val;
+        if (hType === 'bp' && (v.sys < 60 || v.sys > 260 || v.dia < 30 || v.dia > 180)) return toast(t('err_value'));
+        D.health.push({ t: Date.now(), type: hType, v });
+        if (hType === 'weight' && D.profile) D.profile.weight = v.val;
+        if (hType === 'waist' && D.profile) D.profile.waist = v.val;
+        saveData(); render();
+        const it = Health.interpret({ type: hType, v }, D.profile);
+        if (it[0] === 'urgent') openModal(`<div class="sheet-handle"></div><h2>🚨 ${t('urgent')}</h2><p class="remark lv-urgent">${esc(L(it[1]))}</p><button class="btn primary full" data-act="closeModal">${t('close')}</button>`);
+      };
+      const pq = $('#parqForm');
+      if (pq) pq.onsubmit = (e) => {
+        e.preventDefault();
+        const yes = [...new FormData(pq).values()].some((v) => v === '1');
+        D.prefs.parq = { yes, t: Date.now() }; saveData(); render();
+      };
+    }
     if (view === 'me') {
+      const pf = $('#pwForm');
+      if (pf) pf.onsubmit = async (e) => {
+        e.preventDefault();
+        const fd = new FormData(pf);
+        const st = Sec.strength(fd.get('n1'), user);
+        try {
+          if (st.issues.length) throw st.issues.map((i) => t(i)).join(' ');
+          if (fd.get('n1') !== fd.get('n2')) throw t('err_match');
+          await changePassword(fd.get('old'), fd.get('n1'));
+          toast(t('saved')); render();
+        } catch (x) { $('#pwErr').textContent = typeof x === 'string' ? x : t('err_generic'); }
+      };
+      const df = $('#delForm');
+      if (df) df.onsubmit = async (e) => {
+        e.preventDefault();
+        if (!confirm(t('delete_confirm'))) return;
+        try { await deleteAccount(new FormData(df).get('p')); stack = [['home']]; render(); toast(t('deleted')); }
+        catch (x) { $('#delErr').textContent = typeof x === 'string' ? x : t('err_generic'); }
+      };
       const af = $('#aiForm');
       if (af) af.onsubmit = (e) => {
         e.preventDefault();
@@ -1129,9 +1672,76 @@
     const d = b.dataset;
     switch (d.act) {
       case 'back': goBack(); break;
+      case 'authMode': loginMode = d.m; render(); break;
+      case 'google':
+        googleLogin().then((ok) => { if (ok) afterLogin(null); }).catch((x) => { const el = $('#authErr'); if (el) el.textContent = typeof x === 'string' ? x : t('err_generic'); });
+        break;
+      case 'copy':
+        try { navigator.clipboard.writeText(d.v).then(() => toast(t('copied')), () => {}); } catch (e) {}
+        break;
+      case 'setMode':
+        D.prefs.mode = d.id; saveData();
+        if (d.stay) render(); else { stack = [[D.profile ? 'home' : 'me']]; render(); }
+        break;
+      case 'theme': store.set('fc_theme', d.v); applyTheme(); render(); break;
+      case 'openProgram': progView = 0; go('program'); break;
+      case 'progCreate':
+        createProgram(d.type);
+        if (d.type === 'manual') go('progEdit', null, true); else render();
+        break;
+      case 'progWeek': progView = Math.max(1, Math.min(Program.WEEKS, (progView || progCurrentWeek()) + +d.d)); render(); break;
+      case 'progGoto': progView = +d.w; render(); break;
+      case 'startProg': {
+        const wk = progWeek(+d.w);
+        const sess = wk.sessions.find((x) => x.key === d.key);
+        if (sess && sess.items.length) newWorkout(sess.items, sess.key);
+        break;
+      }
+      case 'progEdit': go('progEdit'); break;
+      case 'progReset': if (confirm(t('reset_confirm'))) { D.program = null; saveData(); render(); } break;
+      case 'progSave':
+        D.program.manual = D.program.manual.filter((x) => x.items.length);
+        if (!D.program.manual.length) { toast(t('add_exercise')); D.program.manual = defaultManual(); break; }
+        D.program.deload = $('#manDeload').checked; saveData(); toast(t('saved')); goBack();
+        break;
+      case 'dayAdd': D.program.manual.push({ name: t('day') + ' ' + (D.program.manual.length + 1), items: [] }); render(); break;
+      case 'dayDel': D.program.manual.splice(+d.i, 1); render(); break;
+      case 'manAdd': pickExercise(+d.i); break;
+      case 'manPick': {
+        const e = EX[d.id];
+        D.program.manual[+d.i].items.push(e.hold || e.cardio ? { id: e.id, sets: 3, hold: 30, rest: 45 } : { id: e.id, sets: 3, reps: [8, 12], rest: 90 });
+        closeModal(); render();
+        break;
+      }
+      case 'manDel': D.program.manual[+d.i].items.splice(+d.j, 1); render(); break;
+      case 'hType': hType = d.id; render(); break;
+      case 'parqRedo': delete D.prefs.parq; saveData(); render(); break;
+      case 'healthReport': healthReport(); break;
+      case 'shareReport':
+        if (navigator.share) navigator.share({ title: 'FitCoach', text: window.__report }).catch(() => {});
+        else try { navigator.clipboard.writeText(window.__report); toast(t('copied')); } catch (e) {}
+        break;
+      case 'secLock': case 'secScreen': {
+        const all = users();
+        const u = all[user];
+        const key = d.act === 'secLock' ? 'lock' : 'secure';
+        const turnOn = b.checked;
+        const apply = () => { u[key] = turnOn; setUsers(all); if (key === 'secure' && NATIVE) Android.setSecure(turnOn); toast(t('saved')); };
+        if (key === 'lock' && turnOn) nativeAsk((cb) => Android.authenticate(t('unlock_title'), cb)).then((ok) => { if (ok) apply(); else b.checked = false; });
+        else apply();
+        break;
+      }
       case 'toggleAuth': loginMode = loginMode === 'login' ? 'signup' : 'login'; render(); break;
-      case 'logout': store.del('fc_session'); user = null; D = null; W = null; stack = [['home']]; render(); break;
-      case 'ex': go('exercise', d.id); break;
+      case 'logout': logout(); stack = [['home']]; render(); break;
+      case 'ex': anim.ex = d.id; anim.yaw = Figure.defaultYaw(EX[d.id]); anim.paused = false; go('exercise', d.id); break;
+      case 'yaw':
+        anim.yaw = +d.v;
+        app().querySelectorAll('.view-seg button').forEach((x) => x.classList.toggle('on', x === b));
+        if (anim.steps) renderSteps();
+        break;
+      case 'animPause': anim.paused = !anim.paused; b.textContent = anim.paused ? '▶ ' + t('play') : '⏸ ' + t('pause'); break;
+      case 'animSpeed': anim.speed = anim.speed < 1 ? 1 : 0.4; b.textContent = anim.speed < 1 ? '🐢 0.4×' : '1×'; break;
+      case 'animSteps': anim.steps = !anim.steps; $('#stepsBox').hidden = !anim.steps; renderSteps(); break;
       case 'muscle': filter.muscle = d.id; tab('train'); break;
       case 'fmuscle': filter.muscle = d.id; render(); break;
       case 'bodyMuscle':
@@ -1151,6 +1761,16 @@
         break;
       }
       case 'aiAnalyse': aiAnalyse(); break;
+      case 'dishSearch': {
+        const q = d.v.toLowerCase();
+        const hits = searchFoods(q);
+        const words = q.split(/[\s,-]+/).filter((w) => w.length > 3);
+        const res = hits.length ? hits : FOODS.filter((f) => words.some((w) => f.keys.some((k) => String(k).includes(w)) || L(f.name).toLowerCase().includes(w)));
+        foodState.q = d.v; foodState.cat = null; render();
+        const r = $('#foodResults');
+        if (r) { r.innerHTML = res.slice(0, 20).map((f) => foodRow(f)).join('') || `<p class="small muted">${t('not_found')}${D.prefs.aiKey ? '' : ' ' + t('ai_hint')}</p>`; r.scrollIntoView({ block: 'center' }); }
+        break;
+      }
       case 'aiKeyDel': delete D.prefs.aiKey; saveData(); render(); break;
       case 'fequip': filter.equip = d.id; render(); break;
       case 'science': go('science'); break;
@@ -1163,21 +1783,21 @@
       case 'setDone': {
         const s = W.ex[d.w].sets[d.s];
         s.done = !s.done;
-        store.set('fc_w_' + user, W); render();
-        if (s.done) startRest(prescription(EX[W.ex[d.w].id]).rest);
+        D.activeW = W; saveData(); render();
+        if (s.done) startRest(rxOf(W.ex[d.w]).rest);
         break;
       }
-      case 'addSet': { const x = W.ex[d.w]; x.sets.push({ kg: x.sets[x.sets.length - 1]?.kg || '', reps: '', done: false }); store.set('fc_w_' + user, W); render(); break; }
+      case 'addSet': { const x = W.ex[d.w]; x.sets.push({ kg: x.sets[x.sets.length - 1]?.kg || '', reps: '', done: false }); D.activeW = W; saveData(); render(); break; }
       case 'swap': {
         const x = W.ex[d.w];
         D.prefs.swaps[x.id] = (D.prefs.swaps[x.id] || 0) + 1; saveData(); // learn: user doesn't like this one
         const alt = chooseExercises([EX[x.id].group], W.ex.map((y) => y.id))[0];
-        if (alt) { const rx = prescription(EX[alt]); W.ex[d.w] = { id: alt, sets: Array.from({ length: rx.sets }, () => ({ kg: '', reps: '', done: false })) }; store.set('fc_w_' + user, W); render(); }
+        if (alt) { const rx = prescription(EX[alt]); W.ex[d.w] = { id: alt, sets: Array.from({ length: rx.sets }, () => ({ kg: '', reps: '', done: false })) }; D.activeW = W; saveData(); render(); }
         break;
       }
       case 'skipRest': clearInterval(restTimer); $('#rest').hidden = true; break;
       case 'finish': finishWorkout(); break;
-      case 'cancelW': clearInterval(restTimer); $('#rest').hidden = true; W = null; store.del('fc_w_' + user); tab('home'); break;
+      case 'cancelW': clearInterval(restTimer); $('#rest').hidden = true; W = null; D.activeW = null; saveData(); tab('home'); break;
       case 'photo': takePhoto(d.src); break;
       case 'fcat': foodState.cat = foodState.cat === d.id ? null : d.id; foodState.q = ''; render(); { const r = $('#foodSearch'); if (r) r.scrollIntoView({ block: 'start', behavior: 'smooth' }); } break;
       case 'foodDetail': foodDetail(d.id); break;
@@ -1200,10 +1820,10 @@
   });
 
   // ------------------------------------------------------------------ boot
-  const s = store.get('fc_session', null);
-  if (s && store.get('fc_users', {})[s]) openSession(s);
-  stack = [[user && !D.profile ? 'me' : 'home']];
-  if (user && store.get('fc_w_' + user, null)) W = store.get('fc_w_' + user, null);
-  render();
-  window.FC = { body, plan, grade, matchLabels, muscleState }; // for debugging / tests
+  applyTheme();
+  (async () => {
+    stack = [['home']];
+    if (await resumeSession()) { W = D.activeW || null; stack = [[!D.prefs.mode ? 'mode' : D.profile ? 'home' : 'me']]; }
+    render();
+  })();
 })();

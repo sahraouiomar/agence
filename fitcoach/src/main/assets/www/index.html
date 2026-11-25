@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0f1115">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://images.openfoodfacts.org https://static.openfoodfacts.org; connect-src 'self' https://api.anthropic.com https://world.openfoodfacts.org; media-src 'self' blob: mediastream:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
 <title>FitCoach</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -14,13 +15,18 @@
 <div id="rest" class="rest" hidden></div>
 <div id="modal" class="modal" hidden><div id="modalBody" class="sheet"></div></div>
 <div id="toast" class="toast" hidden></div>
+<div id="lock" class="lock" hidden><div>🔒</div><p>FitCoach</p></div>
+<script src="secure.js"></script>
 <script src="i18n.js"></script>
 <script src="data/exercises.js"></script>
 <script src="data/exercises2.js"></script>
+<script src="data/exercises3.js"></script>
 <script src="data/foods.js"></script>
 <script src="figure.js"></script>
 <script src="bodymap.js"></script>
 <script src="pose.js"></script>
+<script src="program.js"></script>
+<script src="health.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -117,7 +117,7 @@
       frames: [{ t: 25, l: -80, s: -100, a: -90, f: -90 }, { t: 25, l: -80, s: -100, a: 165, f: -95 }],
     },
     {
-      id: 'superman', group: 'lowerback', second: ['back', 'glutes'], equip: ['none'], level: 0,
+      id: 'superman', group: 'lowerback', second: ['back', 'glutes'], equip: ['none'], level: 0, prone: true,
       name: T('Superman', 'Superman', 'تمرين سوبرمان'),
       steps: [
         S('Allongé sur le ventre, bras tendus devant.', 'Lie face down, arms stretched forward.', 'استلقِ على بطنك والذراعان ممدودتان للأمام.'),

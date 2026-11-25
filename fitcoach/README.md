@@ -55,7 +55,7 @@ Application Android : **entraînement musculaire guidé**, **correction de postu
 - `src/main/java/tn/fitcoach/MainActivity.kt` : WebView + pont `window.Android` : photo (caméra/galerie) → ML Kit Image Labeling + **Object Detection** (éléments de l'assiette) + **Barcode Scanning** ; requêtes Open Food Facts ; vidéo → extraction d'images → ML Kit Pose Detection ; images caméra en direct → Pose Detection ; synthèse vocale.
 - `src/main/assets/www/` : interface HTML/CSS/JS
   - `app.js` (comptes, planificateur, nutrition, assiette, code-barres, IA, coach caméra, profil), `pose.js` (analyse des angles et règles de correction), `figure.js` (mannequin animé), `bodymap.js` (carte du corps), `i18n.js` (textes FR/EN/AR et conseils)
-  - `vendor/anthropic-sdk.min.js` : SDK officiel Anthropic (TypeScript, licence MIT) empaqueté pour le navigateur, chargé seulement quand l'IA est utilisée
+  - `vendor/anthropic-sdk.min.js` : SDK officiel Anthropic (TypeScript, licence Apache 2.0) empaqueté pour le navigateur, chargé seulement quand l'IA est utilisée
   - `data/exercises.js` + `data/exercises2.js` (exercices, muscles, principes scientifiques), `data/foods.js` (base nutritionnelle).
 
 ```bash

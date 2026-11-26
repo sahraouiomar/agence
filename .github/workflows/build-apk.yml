@@ -21,3 +21,7 @@ jobs:
         with:
           name: EnglishArabi-apk
           path: app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FitCoach-apk
+          path: fitcoach/build/outputs/apk/release/*.apk

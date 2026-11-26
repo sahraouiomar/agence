@@ -7,3 +7,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "EnglishArabi"
 include(":app")
+include(":fitcoach")

@@ -11,6 +11,15 @@
   const round = (x, n = 0) => { const k = 10 ** n; return Math.round(x * k) / k; };
   const EX = Object.fromEntries(EXERCISES.map((e) => [e.id, e]));
   const MU = Object.fromEntries(MUSCLES.map((m) => [m.id, m]));
+  // free-exercise-db library (876 exercises, public domain): real photos, English instructions
+  const LIB_URL = 'https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/';
+  const LIB = (window.LIBRARY || []).map(([id, en, fr, ar, group, second, equip, level, cat, mech, instr, imgs]) => ({
+    id: 'lib:' + id, lib: true, name: { fr: fr || en, en, ar: ar || fr || en }, nameEN: en, group, second, equip: [equip], level, category: cat, mechanic: mech,
+    steps: instr.map((x) => ({ fr: x, en: x, ar: x })), mistakes: [], tip: null, hold: cat === 'stretching', cardio: cat === 'cardio', frames: null,
+    photos: imgs.map((b, i) => (b ? `lib/${id}_${i}.jpg` : `${LIB_URL}${id}/${i}.jpg`)),
+  }));
+  LIB.forEach((e) => { EX[e.id] = e; });
+  const exName = (e) => L(e.name);
   const FOOD = Object.fromEntries(FOODS.map((f) => [f.id, f]));
   FOOD_CATS.packaged = { fr: 'Produits emballés', en: 'Packaged', ar: 'منتجات معلّبة', icon: '📦' };
   // foods learned from barcodes (Open Food Facts) and AI analyses, shared by all accounts on this phone
@@ -260,8 +269,8 @@
   const LEVEL = () => (D.profile ? +D.profile.level || 0 : 0);
   function allowedEquip() {
     const place = D.profile?.place || 'home';
-    if (place === 'gym') return ['none', 'dumbbell', 'barbell', 'bar', 'bench', 'machine'];
-    if (place === 'home_db') return ['none', 'dumbbell', 'bench'];
+    if (place === 'gym') return ['none', 'dumbbell', 'barbell', 'bar', 'bench', 'machine', 'cable', 'kettlebell', 'band', 'ball', 'other'];
+    if (place === 'home_db') return ['none', 'dumbbell', 'bench', 'kettlebell', 'band', 'ball'];
     return ['none', 'bench'];
   }
   const canDo = (ex) => ex.equip.some((e) => allowedEquip().includes(e)); // equip lists alternatives
@@ -359,6 +368,7 @@
   function prescription(ex) {
     const goal = D.profile?.goal || 'fit';
     const lv = LEVEL();
+    if (ex.minutes) return { sets: 1, hold: ex.minutes * 60, min: ex.minutes, rest: 0 };
     if (ex.cardio) return { sets: 3, hold: 40, rest: 30 };
     if (ex.hold) return { sets: lv ? 3 : 2, hold: [20, 35, 50][lv], rest: 45 };
     const P = {
@@ -373,7 +383,7 @@
     if (ex.equip.includes('none') && ex.equip.length === 1 && goal === 'strength') reps = [8, 12];
     return { sets, reps, rest: P.rest };
   }
-  const rxText = (rx) => rx.hold ? `${rx.sets} × ${rx.hold}${t('seconds')} · ${t('rest')} ${rx.rest}${t('seconds')}` : `${rx.sets} × ${rx.reps[0]}–${rx.reps[1]} ${t('reps')} · ${t('rest')} ${rx.rest}${t('seconds')}`;
+  const rxText = (rx) => rx.min ? `${rx.min} min · ${t('cardio_zone2')}` : rx.hold ? `${rx.sets} × ${rx.hold}${t('seconds')} · ${t('rest')} ${rx.rest}${t('seconds')}` : `${rx.sets} × ${rx.reps[0]}–${rx.reps[1]} ${t('reps')} · ${t('rest')} ${rx.rest}${t('seconds')}`;
 
   function plan() {
     const st = muscleState();
@@ -476,6 +486,7 @@
     onPause() { stopLive(); pausedAt = Date.now(); saveData(true); },
     onResume() { lockIfNeeded(); },
     onAccount(id, email) { const c = callbacks[id]; delete callbacks[id]; c && c.done(email); },
+    onWear(o) { try { onWear(o); } catch (e) {} },
     onAuth(id, ok) { const c = callbacks[id]; delete callbacks[id]; c && c.done(!!ok); },
   };
   const speak = (s) => { if (NATIVE && voiceOn) try { Android.speak(s, I18N.lang); } catch (e) {} };
@@ -504,7 +515,7 @@
     document.body.dataset.mode = mode();
     Figure.setSex(D.profile?.sex);
     renderNav();
-    const V = { home: viewHome, train: viewTrain, exercise: viewExercise, workout: viewWorkout, food: viewFood, coach: viewCoach, me: viewMe, history: viewHistory, science: viewScience, mode: viewMode, program: viewProgram, progEdit: viewProgEdit, health: viewHealth };
+    const V = { home: viewHome, train: viewTrain, exercise: viewExercise, workout: viewWorkout, food: viewFood, coach: viewCoach, me: viewMe, history: viewHistory, science: viewScience, mode: viewMode, program: viewProgram, progEdit: viewProgEdit, health: viewHealth, devices: viewDevices, reports: viewReports };
     app().innerHTML = (V[view] || viewHome)(arg);
     window.scrollTo(0, 0);
     after(view, arg);
@@ -580,7 +591,9 @@
       } catch (x) { err.textContent = typeof x === 'string' ? x : t('err_generic'); btn.disabled = false; }
     };
   }
+  function autoSync() { if (user && D.wear && D.wear.hc && Date.now() - (D.wear.lastSync || 0) > 3 * 3600e3) hcSync(30, true); }
   function afterLogin(recoveryCode) {
+    setTimeout(autoSync, 1500);
     loginMode = 'login';
     W = D.activeW || null;
     stack = [[!D.prefs.mode ? 'mode' : D.profile ? 'home' : 'me']];
@@ -669,7 +682,12 @@
     const foodCard = `<section class="card ${mode() === 'healthy' ? 'hero food-hero' : ''}">${mode() === 'healthy' ? '<div class="hero-bg"></div>' : ''}<h2>${t('today_food')}</h2>
         ${b ? `<div class="food-sum">${ring(tot.kcal, b.kcal + dayBurn(), t('kcal_left'))}<div class="macros">${macroBar('protein', tot.p, b.protein)}${macroBar('carbs', tot.c, b.carbs)}${macroBar('fat', tot.f, b.fat)}${macroBar('fiber', tot.fiber, b.fiber)}</div></div>${dayBurn() ? `<p class="small burn">🔥 +${dayBurn()} ${t('burned')}</p>` : ''}` : `<p>${t('fill_profile')}</p>`}
         <div class="row"><button class="btn primary" data-act="photo" data-src="camera">📸 ${t('scan_food')}</button></div></section>`;
-    const order = mode() === 'healthy' ? [foodCard, healthCard, trainCard] : mode() === 'pro' ? [progCard, trainCard, healthCard, foodCard] : [progCard, trainCard, foodCard];
+    const today = D.wear && D.wear.days[todayKey()];
+    const yest = D.wear && D.wear.days[todayKey(new Date(Date.now() - DAY))];
+    const watchCard = D.wear && D.wear.hc ? `<button class="card linkcard watch-card" data-act="openReports"><b>⌚ ${t('watch_today')}</b>
+        <div class="mini-vitals"><span>👣 ${fmt(today?.steps)}</span><span>❤️ ${today?.rhr ?? yest?.rhr ?? '—'}</span><span>😴 ${hm(today?.sleepMin != null ? today.sleepMin / 60 : yest?.sleepMin != null ? yest.sleepMin / 60 : null)}</span><span>🔥 ${fmt(today?.active)}</span></div><small class="muted">${t('reports')} →</small></button>` : '';
+    const order0 = mode() === 'healthy' ? [foodCard, healthCard, trainCard] : mode() === 'pro' ? [progCard, trainCard, healthCard, foodCard] : [progCard, trainCard, foodCard];
+    const order = watchCard ? [order0[0], watchCard, ...order0.slice(1)] : order0;
     return `<header class="top home-top"><h1>${t('hello')}, ${esc(displayName())} 👋</h1><button class="avatar" data-tab="me" aria-label="${t('profile')}">${esc(String(displayName()).slice(0, 1).toUpperCase())}</button></header>
       <p class="mode-pill">${MODES.find((m) => m[0] === mode())[1]} ${t(MODES.find((m) => m[0] === mode())[2])}</p>
       <div class="stats">
@@ -688,16 +706,27 @@
   // ------------------------------------------------------------------ views: exercises
   let filter = { muscle: 'all', equip: 'mine', q: '' };
   const short = (m) => L(MU[m].name).split(' (')[0];
+  const thumb = (e) => (e.lib ? `<span class="fig lib-thumb"><img src="${esc(e.photos[1] || e.photos[0] || '')}" alt="" loading="lazy"></span>` : Figure.still(e));
   function exCard(e) {
     const rx = prescription(e);
-    return `<button class="ex-card" data-act="ex" data-id="${e.id}">${Figure.still(e)}<div class="ex-txt"><b>${esc(L(e.name))}</b>
+    return `<button class="ex-card" data-act="ex" data-id="${e.id}">${thumb(e)}<div class="ex-txt"><b>${esc(L(e.name))}</b>
       <div class="small muted">${MU[e.group].icon} ${esc(short(e.group))} · ${e.equip.map((q) => esc(L(EQUIP[q]))).join(' / ')}</div>
-      <div class="small">${rxText(rx)}</div>${e.analyzer ? '<span class="badge">📷 IA</span>' : ''}</div></button>`;
+      <div class="small">${rxText(rx)}</div>${e.analyzer ? '<span class="badge">📷 IA</span>' : ''}${e.machine || e.equip.some((q) => q === 'machine' || q === 'cable') ? `<span class="badge m">🏋️ ${t('machine_b')}</span>` : ''}${e.lib ? `<span class="badge p">📸 ${t('photos_b')}</span>` : '<span class="badge d">🧍 3D</span>'}</div></button>`;
   }
   function exList() {
     const q = filter.q.trim().toLowerCase();
-    const list = EXERCISES.filter((e) => (filter.muscle === 'all' || e.group === filter.muscle || (q && e.second.includes(filter.muscle))) &&
-      (filter.equip === 'all' || canDo(e)) && (!q || [e.name.fr, e.name.en, e.name.ar].some((n) => n.toLowerCase().includes(q))));
+    const src = filter.src || 'all';
+    const pool = src === '3d' ? EXERCISES : src === 'lib' ? LIB : EXERCISES.concat(LIB);
+    const list = pool.filter((e) => (filter.muscle === 'all' || e.group === filter.muscle || (q && e.second.includes(filter.muscle))) &&
+      (filter.equip === 'all' || canDo(e)) && (!filter.kind || filter.kind === 'all' || e.equip.includes(filter.kind) || (filter.kind === 'machine' && e.machine)) &&
+      (!q || [e.name.fr, e.name.en, e.name.ar, e.nameEN || ''].some((n) => n.toLowerCase().includes(q))));
+    const lim = filter.limit || 30;
+    if (list.length > lim) {
+      const shown = list.slice(0, lim);
+      const none = shown.filter((e) => e.equip.includes('none')), eq = shown.filter((e) => !e.equip.includes('none'));
+      const sec = (title, arr) => (arr.length ? `<h3 class="sec-title">${title}</h3><div class="ex-list">${arr.map(exCard).join('')}</div>` : '');
+      return `<p class="small muted">${t('n_ex', { n: list.length })}</p>` + sec('🏠 ' + t('sec_none'), none) + sec('🏋️ ' + t('sec_equip'), eq) + `<button class="btn full" data-act="moreEx">＋ ${t('show_more')} (${list.length - lim})</button>`;
+    }
     const none = list.filter((e) => e.equip.includes('none')), eq = list.filter((e) => !e.equip.includes('none'));
     const sec = (title, arr) => (arr.length ? `<h3 class="sec-title">${title} <span class="muted small">${t('n_ex', { n: arr.length })}</span></h3><div class="ex-list">${arr.map(exCard).join('')}</div>` : '');
     return sec('🏠 ' + t('sec_none'), none) + sec('🏋️ ' + t('sec_equip'), eq) || `<p class="muted">—</p>`;
@@ -718,6 +747,8 @@
       <div class="chips scroll">${[['all', '✨', t('all')], ...MUSCLES.map((m) => [m.id, m.icon, short(m.id)])].map(([id, i, n]) => `<button class="chip ${sel === id ? 'on' : ''}" data-act="fmuscle" data-id="${id}">${i} ${esc(n)}</button>`).join('')}</div>
       ${sel !== 'all' ? muscleCard(sel) : ''}
       <input id="exSearch" class="search" type="search" placeholder="${t('search_ex')}" value="${esc(filter.q)}">
+      <div class="seg">${[['all', 'src_all', EXERCISES.length + LIB.length], ['3d', 'src_3d', EXERCISES.length], ['lib', 'src_lib', LIB.length]].map(([v, k, n]) => `<button data-act="fsrc" data-id="${v}" class="${(filter.src || 'all') === v ? 'on' : ''}">${t(k)} <small>${n}</small></button>`).join('')}</div>
+      <div class="chips scroll">${[['all', '✨'], ['machine', '🏋️'], ['cable', '🪢'], ['barbell', '🏋️‍♂️'], ['dumbbell', '💪'], ['kettlebell', '🔔'], ['band', '➰'], ['none', '🏠']].map(([k, ic]) => `<button class="chip ${(filter.kind || 'all') === k ? 'on' : ''}" data-act="fkind" data-id="${k}">${ic} ${esc(k === 'all' ? t('all') : L(EQUIP[k]) || k)}</button>`).join('')}</div>
       <div class="seg"><button class="${filter.equip === 'mine' ? 'on' : ''}" data-act="fequip" data-id="mine">${esc(t(D.profile?.place === 'gym' ? 'gym' : D.profile?.place === 'home_db' ? 'home_db' : 'home_place'))}</button><button class="${filter.equip === 'all' ? 'on' : ''}" data-act="fequip" data-id="all">${t('all')} (${EXERCISES.length})</button></div>
       <div id="exList">${exList()}</div>
       <button class="card linkcard" data-act="science">🔬 ${t('science')} →</button>`;
@@ -735,8 +766,11 @@
     const rx = prescription(e);
     const ld = lastDone(id);
     const q = encodeURIComponent(L(e.name) + ' ' + ({ fr: 'exécution correcte', en: 'proper form', ar: 'الطريقة الصحيحة' }[I18N.lang]));
+    if (e.lib) return viewLibExercise(e);
+    const use3d = D.prefs.view3d !== false && window.Figure3D && Figure3D.supported();
     return `${header(L(e.name))}
-      <div class="card demo"><svg id="anim" class="fig big" viewBox="0 0 200 150"></svg>
+      <div class="card demo">${use3d ? '<canvas id="anim3d" class="fig3d"></canvas>' : '<svg id="anim" class="fig big" viewBox="0 0 200 150"></svg>'}
+        <div class="row ctl-row r3d"><button class="btn sm" data-act="toggle3d">${use3d ? '✏️ ' + t('view_2d') : '🧊 ' + t('view_3d')}</button></div>
         <div class="seg view-seg">${[[0, 'view_profile'], [35, 'view_34'], [90, 'view_front'], [-90, 'view_back']].map(([v, k]) => `<button data-act="yaw" data-v="${v}" class="${Math.round(anim.yaw) === v ? 'on' : ''}">${t(k)}</button>`).join('')}</div>
         <div class="row ctl-row"><button class="btn sm" data-act="animPause">${anim.paused ? '▶ ' + t('play') : '⏸ ' + t('pause')}</button><button class="btn sm" data-act="animSpeed">${anim.speed < 1 ? '🐢 0.4×' : '1×'}</button><button class="btn sm" data-act="animSteps">👣 ${t('steps_view')}</button></div>
         <p class="small muted center">↔️ ${t('drag_hint')}</p>
@@ -753,6 +787,49 @@
         <button class="btn" data-act="url" data-url="https://www.youtube.com/results?search_query=${q}">▶️ ${t('watch_video')} <span class="small muted">(${t('video_need_net')})</span></button>
         <button class="btn" data-act="startEx" data-id="${id}">📝 ${t('log_set')}</button>
       </div>`;
+  }
+
+  function viewLibExercise(e) {
+    const rx = prescription(e);
+    const q = encodeURIComponent(e.nameEN + ' proper form');
+    const tr = libTranslations()[e.id];
+    return `${header(L(e.name))}
+      <div class="card demo photo-demo"><div class="photo-anim">${e.photos.map((p, i) => `<img src="${esc(p)}" alt="${i ? t('step_end') : t('step_start')}" class="ph${i}">`).join('')}<p class="noimg-msg">📶 ${t('photos_need_net')}</p></div>
+        <div class="row ctl-row"><span class="chip">1 · ${t('step_start')}</span><span class="chip">2 · ${t('step_end')}</span></div>
+        <p class="small muted center">📸 ${t('lib_credit')}</p></div>
+      <section class="card"><h2>🎯 ${t('targets')}</h2>
+        <div class="chips"><span class="chip on">${MU[e.group].icon} ${esc(L(MU[e.group].name))}</span>${e.second.map((m) => `<span class="chip sec">${esc(short(m))}</span>`).join('')}<span class="chip">${esc(L(EQUIP[e.equip[0]]) || e.equip[0])}</span><span class="chip">${t('lv' + e.level)}</span></div>
+        <div class="mini-map">${BodyMap.render({ fill: (g) => (g === e.group ? 'var(--bm-sel)' : e.second.includes(g) ? 'var(--bm-sec)' : 'var(--bm-idle)') })}</div></section>
+      <section class="card"><h2>📋 ${t('prescription')}</h2><p class="big-txt">${rxText(rx)}</p></section>
+      <section class="card"><h2>✅ ${t('how_to')}</h2>
+        ${tr ? `<ol class="steps">${tr.map((s) => `<li>${esc(s)}</li>`).join('')}</ol><p class="small muted">✨ ${t('translated_ai')}</p>`
+          : `<ol class="steps" dir="ltr" lang="en">${e.steps.map((s) => `<li>${esc(s.en)}</li>`).join('')}</ol>
+          ${I18N.lang !== 'en' ? (D.prefs.aiKey ? `<button class="btn ai full" data-act="aiTranslate" data-id="${e.id}">✨ ${t('ai_translate')}</button>` : `<p class="small muted">🇬🇧 ${t('lib_english')}</p>`) : ''}`}</section>
+      <div class="col">
+        <button class="btn" data-act="url" data-url="https://www.youtube.com/results?search_query=${q}">▶️ ${t('watch_video')} <span class="small muted">(${t('video_need_net')})</span></button>
+        <button class="btn primary" data-act="startEx" data-id="${e.id}">📝 ${t('log_set')}</button>
+      </div>`;
+  }
+  const libTranslations = () => store.get('fc_tr_' + I18N.lang, {});
+  async function aiTranslate(id) {
+    const e = EX[id];
+    if (!D.prefs.aiKey) return;
+    toast(t('ai_running'));
+    try {
+      if (!window.AnthropicSDK) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'vendor/anthropic-sdk.min.js'; sc.onload = res; sc.onerror = rej; document.head.appendChild(sc); });
+      const client = new AnthropicSDK({ apiKey: D.prefs.aiKey, dangerouslyAllowBrowser: true });
+      const lang = { fr: 'French', en: 'English', ar: 'Arabic' }[I18N.lang];
+      const resp = await client.beta.messages.create({
+        model: 'claude-opus-5-5', max_tokens: 16000, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
+        output_config: { effort: 'low', format: { type: 'json_schema', schema: { type: 'object', additionalProperties: false, required: ['steps'], properties: { steps: { type: 'array', items: { type: 'string' } } } } } },
+        system: 'You translate gym exercise instructions for a fitness app. Keep every step, keep the meaning exact, use natural gym vocabulary.',
+        messages: [{ role: 'user', content: `Translate these steps of the exercise "${e.nameEN}" into ${lang}:\n` + e.steps.map((s, i) => `${i + 1}. ${s.en}`).join('\n') }],
+      });
+      if (resp.stop_reason === 'refusal') throw new Error(t('ai_refused'));
+      const out = JSON.parse((resp.content.find((b) => b.type === 'text') || {}).text);
+      const all = libTranslations(); all[id] = out.steps.map(String); store.set('fc_tr_' + I18N.lang, all);
+      if (current === 'exercise') render();
+    } catch (x) { toast(t('ai_error') + ' : ' + ((x && x.message) || x)); }
   }
 
   // ------------------------------------------------------------------ views: workout
@@ -781,10 +858,11 @@
     if (!W) W = D.activeW || null;
     if (!W) return `${header(t('workout'))}<p>—</p>`;
     return `${header(t('workout'))}
+      <div id="liveHr" class="live-hr">${hrBadge()}</div>
       <p class="card small">🔥 ${t('warmup')}</p>
       ${W.ex.map((x, i) => {
         const e = EX[x.id]; const rx = rxOf(x);
-        return `<section class="card wex"><div class="wex-head">${Figure.still(e)}<div><button class="link" data-act="ex" data-id="${x.id}"><b>${esc(L(e.name))}</b></button><div class="small muted">${rxText(rx)}${rx.rir != null ? ` · RIR ${rx.rir}` : ''}</div></div></div>
+        return `<section class="card wex"><div class="wex-head">${thumb(e)}<div><button class="link" data-act="ex" data-id="${x.id}"><b>${esc(L(e.name))}</b></button><div class="small muted">${rxText(rx)}${rx.rir != null ? ` · RIR ${rx.rir}` : ''}</div></div></div>
           ${overloadHint(x.id)}
           <table class="sets"><tr><th>#</th>${e.hold ? '' : `<th>${t('weight_kg')}</th>`}<th>${e.hold ? t('seconds') : t('reps_done')}</th><th>✓</th></tr>
           ${x.sets.map((s, j) => `<tr class="${s.done ? 'done' : ''}"><td>${j + 1}</td>${e.hold ? '' : `<td><input inputmode="decimal" data-w="${i}" data-s="${j}" data-k="kg" value="${esc(s.kg)}" placeholder="0"></td>`}<td><input inputmode="numeric" data-w="${i}" data-s="${j}" data-k="reps" value="${esc(s.reps)}" placeholder="${rx.hold ? rx.hold : rx.reps[0] + '-' + rx.reps[1]}"></td><td><button class="check ${s.done ? 'on' : ''}" data-act="setDone" data-w="${i}" data-s="${j}">✓</button></td></tr>`).join('')}
@@ -811,8 +889,10 @@
       const sets = ex.reduce((n, x) => n + x.sets.length, 0);
       let min = (Date.now() - W.start) / 60000;
       if (min > 180 || min < 5) min = sets * 2.5;
-      const kcal = Math.round(5 * (D.profile?.weight || 70) * Math.min(150, min) / 60);
-      D.workouts.push({ time: Date.now(), start: W.start, ex, kcal, min: Math.round(min) });
+      const kcalMet = Math.round(5 * (D.profile?.weight || 70) * Math.min(150, min) / 60);
+      const kHr = hrKcal(W.hr);
+      const hrs = (W.hr || []).map((x) => x[1]);
+      D.workouts.push({ time: Date.now(), start: W.start, ex, kcal: kHr || kcalMet, min: Math.round(min), hr: hrs.length ? { avg: Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length), max: Math.max(...hrs) } : null });
       saveData();
     }
     if (W.prog && D.program) { D.program.done = D.program.done || {}; D.program.done[W.prog] = Date.now(); }
@@ -1240,7 +1320,7 @@
     const conds = [['diabetes', 'c_diabetes'], ['hyper', 'c_hyper'], ['chol', 'c_chol'], ['knee', 'c_knee'], ['back', 'c_back']];
     return `${header(t('profile'), stack.length > 1)}
       <div class="row between"><span>👤 <b>${esc(displayName())}</b></span><button class="btn sm" data-act="logout">${t('logout')}</button></div>
-      <div class="quick-links"><button class="card linkcard" data-act="openProgram">📅 ${t('program')}</button><button class="card linkcard" data-tab="health">🩺 ${t('health')}</button></div>
+      <div class="quick-links"><button class="card linkcard" data-act="openProgram">📅 ${t('program')}</button><button class="card linkcard" data-tab="health">🩺 ${t('health')}</button><button class="card linkcard" data-act="openDevices">⌚ ${t('devices')}</button><button class="card linkcard" data-act="openReports">📊 ${t('reports')}</button></div>
       <section class="card"><h2>🌐 ${t('language')}</h2>${langPicker()}</section>
       ${b ? bodyReport(b, p) : ''}
       <form id="profForm" class="card form"><h2>📝 ${t('profile')}</h2><p class="small muted">${t('profile_intro')}</p>
@@ -1420,13 +1500,11 @@
       <button class="btn primary big full" data-act="progSave">💾 ${t('save')}</button>`;
   }
   function pickExercise(day) {
-    const list = EXERCISES.filter(canDo);
-    openModal(`<div class="sheet-handle"></div><h2>${t('add_exercise')}</h2><input id="pickQ" class="search" placeholder="${t('search_ex')}">
-      <div id="pickList" class="food-list">${list.map((e) => `<button class="food-row" data-act="manPick" data-i="${day}" data-id="${e.id}"><span class="fr-ic">${MU[e.group].icon}</span><span class="fr-name">${esc(L(e.name))}<small class="muted">${esc(short(e.group))}</small></span></button>`).join('')}</div>`);
-    $('#pickQ').oninput = (ev) => {
-      const q = ev.target.value.toLowerCase();
-      app().ownerDocument.querySelectorAll('#pickList .food-row').forEach((r) => { r.hidden = q && !r.textContent.toLowerCase().includes(q); });
-    };
+    const list = EXERCISES.concat(LIB).filter(canDo);
+    const rows = (q) => list.filter((e) => !q || [e.name.fr, e.name.en, e.name.ar, e.nameEN || '', L(MU[e.group].name)].some((n) => n.toLowerCase().includes(q))).slice(0, 60)
+      .map((e) => `<button class="food-row" data-act="manPick" data-i="${day}" data-id="${e.id}"><span class="fr-ic">${e.lib ? '📸' : MU[e.group].icon}</span><span class="fr-name">${esc(L(e.name))}<small class="muted">${esc(short(e.group))} · ${esc(L(EQUIP[e.equip[0]]) || e.equip[0])}</small></span></button>`).join('');
+    openModal(`<div class="sheet-handle"></div><h2>${t('add_exercise')}</h2><input id="pickQ" class="search" placeholder="${t('search_ex')}"><div id="pickList" class="food-list">${rows('')}</div>`);
+    $('#pickQ').oninput = (ev) => { $('#pickList').innerHTML = rows(ev.target.value.trim().toLowerCase()); };
   }
   function checkinAdjust(ci) {
     // fatigue / soreness high or poor sleep -> less volume ; everything done + fresh -> a bit more
@@ -1464,6 +1542,7 @@
     const ad = Health.adaptiveTdee(log.filter((e) => e.type === 'weight'), intake);
     const parq = D.prefs.parq;
     return `${header(t('health'), stack.length > 1)}
+      <div class="quick-links"><button class="card linkcard" data-act="openDevices">⌚ ${t('devices')}</button><button class="card linkcard" data-act="openReports">📊 ${t('reports')}</button></div>
       ${ready ? `<section class="card ready r-${ready}"><h2>${{ go: '🟢', light: '🟡', rest: '🔴' }[ready]} ${t('ready_' + ready)}</h2><p class="small">${t('ready_' + ready + '_d')}</p></section>` : ''}
       <section class="card"><h2>🩺 ${t('my_measures')}</h2><div class="vitals">${Object.keys(Health.TYPES).map((k) => { const e = latest[k]; const it = e ? hInterp(e) : null; return `<button class="vital ${it ? 'lv-' + it[0] : ''}" data-act="hType" data-id="${k}"><span>${Health.TYPES[k].icon}</span><b>${e ? esc(hValue(e)) : '—'}</b><small>${esc(L(Health.TYPES[k].name))}</small></button>`; }).join('')}</div></section>
       <section class="card"><h2>➕ ${t('add_measure')}</h2>
@@ -1526,10 +1605,259 @@
       </section>`;
   }
 
+  // ------------------------------------------------------------------ smartwatches & sensors
+  const liveWear = { devices: {}, scanning: false, state: null, devId: null, hr: null, hrT: 0, last: {} };
+  const WATCH_APPS = [
+    ['⌚', 'Samsung Galaxy Watch', 'Samsung Health'], ['⌚', 'Google Pixel Watch / Fitbit', 'Fitbit'], ['⌚', 'Wear OS (Mobvoi, Fossil…)', 'Google Fit / Health Connect'],
+    ['⌚', 'Garmin', 'Garmin Connect'], ['⌚', 'Xiaomi / Redmi', 'Mi Fitness'], ['⌚', 'Amazfit', 'Zepp'], ['⌚', 'Huawei / Honor', 'Huawei Health + Health Sync'],
+    ['⌚', 'Withings', 'Withings Health Mate'], ['⌚', 'Polar', 'Polar Flow'], ['💍', 'Oura', 'Oura'],
+  ];
+  const hasHC = () => NATIVE && Android.hcStatus;
+  const nativeHttp = (fn) => new Promise((res, rej) => fn(reg({ done: (txt, err) => (err ? rej(new Error(err)) : res(txt)) })));
+  async function hcSync(days = 400, silent = false) {
+    if (!hasHC() || Android.hcStatus() !== 'available') { if (!silent) toast(t('hc_unavailable')); return; }
+    if (!silent) toast(t('syncing'));
+    try {
+      const j = JSON.parse(await nativeHttp((cb) => Android.hcRead(days, cb)));
+      D.wear = D.wear || { days: {} };
+      for (const d of j.days) D.wear.days[d.date] = Object.assign(D.wear.days[d.date] || {}, d);
+      const seen = new Set((D.health || []).map((e) => e.type + '@' + e.t));
+      let n = 0;
+      for (const m of j.measures) if (!seen.has(m.type + '@' + m.t)) { D.health.push(Object.assign(m, { src: 'watch' })); n++; }
+      D.wear.lastSync = Date.now(); D.wear.hc = true; D.wear.granted = j.granted;
+      saveData();
+      if (!silent) toast(t('synced', { d: j.days.length, m: n }));
+      if (['devices', 'reports', 'home', 'health'].includes(current)) render();
+    } catch (e) { if (!silent) toast(t('sync_error') + ' ' + e.message); }
+  }
+  function onWear(o) {
+    if (o.type === 'device') { liveWear.devices[o.id] = o; if (current === 'devices') renderDevList(); }
+    else if (o.type === 'scanEnd') { liveWear.scanning = false; if (current === 'devices') render(); }
+    else if (o.type === 'state') {
+      liveWear.state = o.state; liveWear.devId = o.id;
+      if (o.state === 'connected') { const dv = liveWear.devices[o.id]; D.wear = D.wear || { days: {} }; D.wear.ble = { id: o.id, name: dv ? dv.name : o.id }; saveData(); toast('🔗 ' + t('connected')); }
+      if (current === 'devices') render();
+    } else if (o.type === 'hr') {
+      liveWear.hr = o.bpm; liveWear.hrT = Date.now();
+      if (W) { W.hr = W.hr || []; if (W.hr.length < 5000) W.hr.push([Date.now(), o.bpm]); }
+      const el = $('#liveHr'); if (el) el.innerHTML = hrBadge();
+      const el2 = $('#devHr'); if (el2) el2.innerHTML = hrBig();
+    } else if (o.type === 'bp' || o.type === 'spo2' || o.type === 'weight') {
+      liveWear.last[o.type] = o;
+      const v = o.type === 'bp' ? { sys: o.sys, dia: o.dia } : { val: o.type === 'weight' ? o.kg : o.val };
+      D.health.push({ t: o.t, type: o.type, v, src: 'ble' });
+      if (o.type === 'bp' && o.pulse) D.health.push({ t: o.t, type: 'hr', v: { val: o.pulse }, src: 'ble' });
+      if (o.type === 'weight' && D.profile) D.profile.weight = o.kg;
+      saveData(); toast('✅ ' + L(Health.TYPES[o.type].name) + ' : ' + (o.type === 'bp' ? `${o.sys}/${o.dia}` : v.val));
+      if (current === 'devices' || current === 'health') render();
+    } else if (o.type === 'error') toast(t('ble_error') + ' (' + o.msg + ')');
+  }
+  const hrMax = () => Math.round(208 - 0.7 * (D.profile?.age || 30)); // Tanaka 2001
+  function hrZone(bpm) {
+    const p = bpm / hrMax();
+    return p < 0.6 ? 1 : p < 0.7 ? 2 : p < 0.8 ? 3 : p < 0.9 ? 4 : 5;
+  }
+  const hrFresh = () => liveWear.hr && Date.now() - liveWear.hrT < 10000;
+  const hrBadge = () => (hrFresh() ? `<span class="hr-badge z${hrZone(liveWear.hr)}">❤️ ${liveWear.hr} <small>bpm · Z${hrZone(liveWear.hr)}</small></span>` : '');
+  const hrBig = () => (hrFresh() ? `<div class="hr-big z${hrZone(liveWear.hr)}"><b>${liveWear.hr}</b><span>bpm</span><small>${t('zone')} ${hrZone(liveWear.hr)} · ${t('zone' + hrZone(liveWear.hr))}</small></div>` : `<p class="small muted">${t('no_live_hr')}</p>`);
+  // calories from heart rate (Keytel et al. 2005)
+  function hrKcal(samples) {
+    if (!samples || samples.length < 10 || !D.profile) return null;
+    const p = D.profile, male = p.sex !== 'f';
+    let kcal = 0;
+    for (let i = 1; i < samples.length; i++) {
+      const dtMin = Math.min(1, (samples[i][0] - samples[i - 1][0]) / 60000);
+      const h = samples[i][1];
+      const perMin = male ? (-55.0969 + 0.6309 * h + 0.1988 * p.weight + 0.2017 * p.age) / 4.184 : (-20.4022 + 0.4472 * h - 0.1263 * p.weight + 0.074 * p.age) / 4.184;
+      kcal += Math.max(0, perMin) * dtMin;
+    }
+    return Math.round(kcal);
+  }
+  function renderDevList() {
+    const box = $('#devList'); if (!box) return;
+    const list = Object.values(liveWear.devices).sort((a, b) => b.rssi - a.rssi);
+    const ic = { hr: '❤️', bp: '🩸', spo2: '🫁', weight: '⚖️' };
+    box.innerHTML = list.map((d) => `<button class="food-row" data-act="bleConnect" data-id="${esc(d.id)}"><span class="fr-ic">${d.kinds.map((k) => ic[k]).join('') || '📶'}</span><span class="fr-name">${esc(d.name)}<small class="muted">${d.kinds.length ? d.kinds.map((k) => t('kind_' + k)).join(', ') : t('kind_unknown')} · ${d.rssi} dBm</small></span>${liveWear.devId === d.id && liveWear.state === 'connected' ? '<span class="badge p">✓</span>' : ''}</button>`).join('') || (liveWear.scanning ? `<p class="small muted"><span class="spinner"></span> ${t('scanning')}</p>` : '');
+  }
+  function viewDevices() {
+    const st = hasHC() ? Android.hcStatus() : 'web';
+    const w = D.wear || {};
+    const last = w.lastSync ? new Date(w.lastSync).toLocaleString(I18N.lang === 'ar' ? 'ar-TN' : I18N.lang) : '—';
+    return `${header(t('devices'))}
+      <p class="muted">${t('devices_intro')}</p>
+      <section class="card"><h2>🔄 ${t('hc_title')}</h2><p class="small muted">${t('hc_desc')}</p>
+        <p class="small"><b>${t('status')} :</b> ${t('hc_' + st)}${w.hc ? ` · ${t('last_sync')} : ${esc(last)}` : ''}</p>
+        ${st === 'available' ? `<div class="row"><button class="btn primary" data-act="hcConnect">⌚ ${t(w.hc ? 'sync_now' : 'hc_connect')}</button><button class="btn" data-act="hcOpen">⚙️ Health Connect</button></div>`
+          : st === 'web' ? '' : `<button class="btn primary full" data-act="hcOpen">⬇️ ${t('hc_install')}</button>`}
+        <details><summary>${t('compatible_watches')}</summary><ul class="watch-list">${WATCH_APPS.map(([i, b, a]) => `<li>${i} <b>${esc(b)}</b> <span class="muted">— ${esc(a)}</span></li>`).join('')}</ul><p class="small muted">${t('hc_howto')}</p></details></section>
+      <section class="card"><h2>📶 ${t('ble_title')}</h2><p class="small muted">${t('ble_desc')}</p>
+        <div id="devHr">${hrBig()}</div>
+        ${liveWear.state === 'connected' ? `<p class="small">🔗 ${t('connected')} : <b>${esc((liveWear.devices[liveWear.devId] || {}).name || w.ble?.name || '')}</b></p><button class="btn full" data-act="bleDisconnect">${t('disconnect')}</button>` : ''}
+        ${NATIVE ? `<button class="btn primary full" data-act="bleScan">${liveWear.scanning ? '…' : '🔍 ' + t('ble_scan')}</button>` : `<p class="small muted">${t('needs_app')}</p>`}
+        <div id="devList" class="food-list"></div>
+        <details><summary>${t('ble_howto_t')}</summary><ul class="small"><li>${t('ble_howto1')}</li><li>${t('ble_howto2')}</li><li>${t('ble_howto3')}</li><li>${t('ble_howto4')}</li></ul></details></section>
+      <button class="card linkcard" data-act="openReports">📊 ${t('reports')} →</button>
+      <p class="small muted">🔒 ${t('wear_privacy')}</p>`;
+  }
+
+  // ------------------------------------------------------------------ reports (day / week / month / year)
+  let rep = { period: 'week', anchor: null };
+  const dkey = (d) => todayKey(d);
+  function rangeOf(period, anchor) {
+    const a = new Date(anchor);
+    if (period === 'day') return [new Date(a.getFullYear(), a.getMonth(), a.getDate()), 1];
+    if (period === 'week') { const m = new Date(mondayOf(a)); return [m, 7]; }
+    if (period === 'month') { const m = new Date(a.getFullYear(), a.getMonth(), 1); return [m, new Date(a.getFullYear(), a.getMonth() + 1, 0).getDate()]; }
+    const y = new Date(a.getFullYear(), 0, 1); return [y, (new Date(a.getFullYear() + 1, 0, 1) - y) / DAY];
+  }
+  function dayData(k) {
+    const w = (D.wear && D.wear.days[k]) || {};
+    const ws = D.workouts.filter((x) => dkey(new Date(x.time)) === k);
+    const tot = dayTotals(k);
+    const meas = (D.health || []).filter((e) => dkey(new Date(e.t)) === k);
+    const last = (type) => { const xs = meas.filter((e) => e.type === type); return xs.length ? xs[xs.length - 1] : null; };
+    return {
+      k, steps: w.steps ?? null, km: w.km ?? null, active: w.active ?? null, total: w.total ?? null, rhr: w.rhr ?? (last('hr') ? last('hr').v.val : null), hrAvg: w.hrAvg ?? null, hrMax: w.hrMax ?? null,
+      sleep: w.sleepMin != null ? w.sleepMin / 60 : (last('sleep') ? last('sleep').v.val : null), exMin: Math.max(w.exMin || 0, ws.reduce((a, x) => a + (x.min || 0), 0)) || null,
+      workouts: ws.length, wkKcal: ws.reduce((a, x) => a + (x.kcal || 0), 0), kcalIn: tot.kcal || null, protein: tot.p || null,
+      weight: last('weight') ? last('weight').v.val : null, sys: last('bp') ? last('bp').v.sys : null, dia: last('bp') ? last('bp').v.dia : null,
+      glucose: last('glucose') ? last('glucose').v.val : null, spo2: last('spo2') ? last('spo2').v.val : null,
+    };
+  }
+  function seriesFor(period, anchor) {
+    const [start, n] = rangeOf(period, anchor);
+    const days = Array.from({ length: n }, (_, i) => dayData(dkey(new Date(start.getFullYear(), start.getMonth(), start.getDate() + i))));
+    if (period !== 'year') return { days, buckets: days.map((d) => ({ label: period === 'month' ? String(new Date(d.k).getDate()) : new Date(d.k).toLocaleDateString(I18N.lang === 'ar' ? 'ar-TN' : I18N.lang, { weekday: 'short' }), d })) };
+    const months = Array.from({ length: 12 }, (_, m) => days.filter((d) => new Date(d.k).getMonth() === m));
+    const avgOf = (arr, f) => { const xs = arr.map(f).filter((v) => v != null); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; };
+    const sumOf = (arr, f) => arr.reduce((a, d) => a + (f(d) || 0), 0);
+    return {
+      days,
+      buckets: months.map((arr, m) => ({
+        label: new Date(2026, m, 1).toLocaleDateString(I18N.lang === 'ar' ? 'ar-TN' : I18N.lang, { month: 'short' }),
+        d: { steps: avgOf(arr, (d) => d.steps), sleep: avgOf(arr, (d) => d.sleep), rhr: avgOf(arr, (d) => d.rhr), weight: avgOf(arr, (d) => d.weight), sys: avgOf(arr, (d) => d.sys), dia: avgOf(arr, (d) => d.dia), kcalIn: avgOf(arr, (d) => d.kcalIn), active: avgOf(arr, (d) => d.active), exMin: sumOf(arr, (d) => d.exMin), workouts: sumOf(arr, (d) => d.workouts) },
+      })),
+    };
+  }
+  function stats(days) {
+    const avg = (f) => { const xs = days.map(f).filter((v) => v != null && !Number.isNaN(v)); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; };
+    const first = (f) => { const d = days.find((x) => f(x) != null); return d ? f(d) : null; };
+    const lastv = (f) => { const d = days.slice().reverse().find((x) => f(x) != null); return d ? f(d) : null; };
+    return {
+      steps: avg((d) => d.steps), sleep: avg((d) => d.sleep), rhr: avg((d) => d.rhr), active: avg((d) => d.active), kcalIn: avg((d) => d.kcalIn), protein: avg((d) => d.protein),
+      sys: avg((d) => d.sys), dia: avg((d) => d.dia), glucose: avg((d) => d.glucose), spo2: avg((d) => d.spo2),
+      exMin: days.reduce((a, d) => a + (d.exMin || 0), 0), workouts: days.reduce((a, d) => a + d.workouts, 0),
+      wFirst: first((d) => d.weight), wLast: lastv((d) => d.weight),
+    };
+  }
+  function barChart(buckets, f, opts = {}) {
+    const vals = buckets.map((b) => f(b.d));
+    const max = Math.max(opts.goal || 0, ...vals.map((v) => v || 0)) || 1;
+    const n = buckets.length, W = 320, H = 120, bw = W / n;
+    const bars = vals.map((v, i) => v == null ? '' : `<rect x="${(i * bw + bw * 0.15).toFixed(1)}" y="${(H - (H * v) / max).toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${((H * v) / max).toFixed(1)}" rx="2" class="${opts.goal && v >= opts.goal ? 'ok' : ''}"/>`).join('');
+    const goal = opts.goal ? `<line x1="0" x2="${W}" y1="${(H - (H * opts.goal) / max).toFixed(1)}" y2="${(H - (H * opts.goal) / max).toFixed(1)}" class="goal"/>` : '';
+    const step = Math.ceil(n / 8);
+    const labels = buckets.map((b, i) => (i % step === 0 ? `<text x="${(i * bw + bw / 2).toFixed(1)}" y="${H + 12}">${esc(b.label)}</text>` : '')).join('');
+    return `<svg class="chart" viewBox="0 0 ${W} ${H + 16}" preserveAspectRatio="none">${goal}${bars}${labels}</svg>`;
+  }
+  function lineChart(buckets, fs, opts = {}) {
+    const series = fs.map((f) => buckets.map((b) => f(b.d)));
+    const all = series.flat().filter((v) => v != null);
+    if (all.length < 1) return `<p class="small muted">${t('no_data')}</p>`;
+    let lo = Math.min(...all), hi = Math.max(...all);
+    if (hi - lo < 4) { lo -= 2; hi += 2; }
+    const n = buckets.length, W = 320, H = 110;
+    const x = (i) => (n === 1 ? W / 2 : (i * W) / (n - 1)), y = (v) => H - ((v - lo) / (hi - lo)) * (H - 10) - 5;
+    const paths = series.map((s, si) => {
+      const pts = s.map((v, i) => (v == null ? null : [x(i), y(v)])).filter(Boolean);
+      return `<polyline class="ln l${si}" points="${pts.map((p) => p.map((q) => q.toFixed(1)).join(',')).join(' ')}"/>` + pts.map((p) => `<circle class="dt l${si}" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.4"/>`).join('');
+    }).join('');
+    return `<svg class="chart" viewBox="0 0 ${W} ${H + 16}" preserveAspectRatio="none"><text x="2" y="10" class="ax">${Math.round(hi)}</text><text x="2" y="${H}" class="ax">${Math.round(lo)}</text>${paths}</svg>`;
+  }
+  const fmt = (v, d = 0) => (v == null ? '—' : Number(v).toLocaleString(I18N.lang === 'ar' ? 'ar-TN' : I18N.lang, { maximumFractionDigits: d }));
+  const hm = (h) => (h == null ? '—' : `${Math.floor(h)} h ${String(Math.round((h % 1) * 60)).padStart(2, '0')}`);
+  function trend(cur, prev, good = 'up') {
+    if (cur == null || prev == null || !prev) return '';
+    const pct = Math.round(((cur - prev) / Math.abs(prev)) * 100);
+    if (!pct) return '<span class="tr">=</span>';
+    const better = (pct > 0) === (good === 'up');
+    return `<span class="tr ${better ? 'good' : 'bad'}">${pct > 0 ? '▲' : '▼'} ${Math.abs(pct)}%</span>`;
+  }
+  function insights(s, period) {
+    const out = [];
+    const b = body();
+    if (s.steps != null) out.push(s.steps >= 8000 ? ['ok', t('in_steps_ok', { n: fmt(s.steps) })] : ['warn', t('in_steps_low', { n: fmt(s.steps) })]);
+    if (s.sleep != null) out.push(s.sleep >= 7 && s.sleep <= 9 ? ['ok', t('in_sleep_ok', { h: hm(s.sleep) })] : ['warn', t('in_sleep_bad', { h: hm(s.sleep) })]);
+    const weeks = { day: 1 / 7, week: 1, month: 4.3, year: 52 }[period];
+    if (period !== 'day') { const perWeek = s.exMin / weeks; out.push(perWeek >= 150 ? ['ok', t('in_active_ok', { n: Math.round(perWeek) })] : ['warn', t('in_active_low', { n: Math.round(perWeek) })]); }
+    if (s.rhr != null) out.push(s.rhr <= 70 ? ['ok', t('in_rhr_ok', { n: Math.round(s.rhr) })] : s.rhr > 90 ? ['bad', t('in_rhr_high', { n: Math.round(s.rhr) })] : ['info', t('in_rhr_mid', { n: Math.round(s.rhr) })]);
+    if (s.sys != null) { const it = Health.interpret({ type: 'bp', v: { sys: Math.round(s.sys), dia: Math.round(s.dia) } }); out.push([it[0] === 'ok' ? 'ok' : it[0] === 'info' ? 'info' : 'warn', `${t('avg_bp')} ${Math.round(s.sys)}/${Math.round(s.dia)} — ${L(it[1])}`]); }
+    if (s.wFirst != null && s.wLast != null && s.wFirst !== s.wLast) { const dw = Math.round((s.wLast - s.wFirst) * 10) / 10; out.push(['info', t('in_weight', { d: (dw > 0 ? '+' : '') + dw })]); }
+    if (b && s.protein != null) out.push(s.protein >= b.protein * 0.9 ? ['ok', t('in_prot_ok', { n: Math.round(s.protein) })] : ['warn', t('in_prot_low', { n: Math.round(s.protein), g: Math.round(b.protein) })]);
+    if (b && s.kcalIn != null && period !== 'day') { const diff = Math.round(s.kcalIn - b.kcal); out.push(['info', t('in_kcal', { n: Math.round(s.kcalIn), d: (diff > 0 ? '+' : '') + diff })]); }
+    return out;
+  }
+  function viewReports() {
+    const anchor = rep.anchor || Date.now();
+    const per = rep.period;
+    const ser = seriesFor(per, anchor);
+    const s = stats(ser.days);
+    const prevAnchor = (() => { const a = new Date(anchor); if (per === 'day') a.setDate(a.getDate() - 1); else if (per === 'week') a.setDate(a.getDate() - 7); else if (per === 'month') a.setMonth(a.getMonth() - 1); else a.setFullYear(a.getFullYear() - 1); return a.getTime(); })();
+    const ps = stats(seriesFor(per, prevAnchor).days);
+    const [start, n] = rangeOf(per, anchor);
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + n - 1);
+    const fmtD = (d, o) => d.toLocaleDateString(I18N.lang === 'ar' ? 'ar-TN' : I18N.lang, o);
+    const title = per === 'day' ? fmtD(start, { weekday: 'long', day: 'numeric', month: 'long' }) : per === 'week' ? `${fmtD(start, { day: 'numeric', month: 'short' })} – ${fmtD(end, { day: 'numeric', month: 'short' })}` : per === 'month' ? fmtD(start, { month: 'long', year: 'numeric' }) : String(start.getFullYear());
+    const kpi = (ic, label, val, tr) => `<div class="kpi"><span>${ic}</span><b>${val}</b><small>${label}</small>${tr || ''}</div>`;
+    const d0 = per === 'day' ? ser.days[0] : null;
+    window.__reportText = [`FitCoach — ${t('report_' + per)} : ${title}`, `${t('steps')}: ${fmt(s.steps)}`, `${t('sleep')}: ${hm(s.sleep)}`, `${t('rhr')}: ${fmt(s.rhr)} bpm`, `${t('activity_min')}: ${fmt(s.exMin)} min`, `${t('workouts_n')}: ${s.workouts}`, s.sys != null ? `${t('avg_bp')}: ${Math.round(s.sys)}/${Math.round(s.dia)} mmHg` : '', s.kcalIn != null ? `${t('kcal_in')}: ${fmt(s.kcalIn)} kcal` : '', s.wLast != null ? `${t('weight')}: ${fmt(s.wLast, 1)} kg` : '', '', ...insights(s, per).map((i) => '• ' + i[1])].filter((x) => x !== '').join('\n');
+    return `${header(t('reports'))}
+      <div class="seg rep-seg">${['day', 'week', 'month', 'year'].map((p) => `<button data-act="repPeriod" data-id="${p}" class="${per === p ? 'on' : ''}">${t('p_' + p)}</button>`).join('')}</div>
+      <div class="week-nav"><button class="icon" data-act="repNav" data-d="-1">‹</button><div><b>${esc(title)}</b><div class="small muted">${t('report_' + per)}</div></div><button class="icon" data-act="repNav" data-d="1" ${rangeOf(per, anchor)[0].getTime() + n * DAY > Date.now() ? 'disabled' : ''}>›</button></div>
+      ${!D.wear || !D.wear.hc ? `<button class="card linkcard prog-cta" data-act="openDevices">⌚ ${t('connect_watch_cta')}</button>` : ''}
+      <section class="card"><div class="kpis4">
+        ${kpi('👣', t('steps') + (per === 'day' ? '' : ' / ' + t('per_day_s')), fmt(s.steps), trend(s.steps, ps.steps))}
+        ${kpi('😴', t('sleep'), hm(s.sleep), trend(s.sleep, ps.sleep))}
+        ${kpi('❤️', t('rhr'), s.rhr == null ? '—' : fmt(s.rhr) + ' bpm', trend(s.rhr, ps.rhr, 'down'))}
+        ${kpi('🔥', t('activity_min'), fmt(s.exMin) + ' min', trend(s.exMin, ps.exMin))}
+        ${kpi('🏋️', t('workouts_n'), String(s.workouts), trend(s.workouts, ps.workouts))}
+        ${kpi('🍽️', t('kcal_in'), s.kcalIn == null ? '—' : fmt(s.kcalIn), '')}
+      </div></section>
+      ${per === 'day' ? `<section class="card"><h2>📋 ${t('day_detail')}</h2><table class="kv">
+          <tr><td>👣 ${t('steps')}</td><td>${fmt(d0.steps)}${d0.km ? ` · ${fmt(d0.km, 1)} km` : ''}</td></tr>
+          <tr><td>🔥 ${t('active_kcal')}</td><td>${fmt(d0.active)} kcal</td></tr>
+          <tr><td>❤️ ${t('hr_day')}</td><td>${d0.hrAvg ? `${d0.hrAvg} (${d0.hrMin ?? '—'}–${d0.hrMax ?? '—'})` : '—'}</td></tr>
+          <tr><td>🩸 ${L(Health.TYPES.bp.name)}</td><td>${d0.sys ? `${d0.sys}/${d0.dia}` : '—'}</td></tr>
+          <tr><td>🍬 ${L(Health.TYPES.glucose.name)}</td><td>${d0.glucose ?? '—'}</td></tr>
+          <tr><td>🫁 SpO2</td><td>${d0.spo2 ? d0.spo2 + ' %' : '—'}</td></tr>
+          <tr><td>⚖️ ${t('weight')}</td><td>${d0.weight ? d0.weight + ' kg' : '—'}</td></tr>
+          <tr><td>🍽️ ${t('kcal_in')}</td><td>${fmt(d0.kcalIn)} kcal · ${t('protein')} ${fmt(d0.protein)} g</td></tr></table></section>`
+        : `<section class="card"><h2>👣 ${t('steps')}</h2>${barChart(ser.buckets, (d) => d.steps, { goal: 8000 })}</section>
+      <section class="card"><h2>😴 ${t('sleep')} (h)</h2>${barChart(ser.buckets, (d) => d.sleep, { goal: 7 })}</section>
+      <section class="card"><h2>❤️ ${t('rhr')}</h2>${lineChart(ser.buckets, [(d) => d.rhr])}</section>
+      <section class="card"><h2>🔥 ${t('activity_min')}</h2>${barChart(ser.buckets, (d) => d.exMin)}</section>
+      <section class="card"><h2>🩸 ${L(Health.TYPES.bp.name)}</h2>${lineChart(ser.buckets, [(d) => d.sys, (d) => d.dia])}</section>
+      <section class="card"><h2>⚖️ ${t('weight')}</h2>${lineChart(ser.buckets, [(d) => d.weight])}</section>
+      <section class="card"><h2>🍽️ ${t('kcal_in')}</h2>${barChart(ser.buckets, (d) => d.kcalIn, { goal: body() ? body().kcal : 0 })}</section>`}
+      <section class="card"><h2>🧠 ${t('analysis')}</h2><ul class="remarks">${insights(s, per).map(([c, x]) => `<li class="${c}">${esc(x)}</li>`).join('') || `<li class="info">${t('no_data')}</li>`}</ul></section>
+      <div class="row no-print"><button class="btn primary" data-act="repShare">📤 ${t('share')}</button><button class="btn" data-act="repPrint">🖨️ ${t('pdf')}</button></div>
+      <p class="small muted">⚕️ ${t('disclaimer')}</p>`;
+  }
+
   // ------------------------------------------------------------------ after-render hooks
   function after(view, arg) {
     if (stopAnim) { stopAnim(); stopAnim = null; }
-    if (view === 'exercise') {
+    if (view === 'exercise' && EX[arg].lib) return;
+    if (view === 'exercise' && $('#anim3d')) {
+      const cv = $('#anim3d');
+      try { stopAnim = Figure3D.create(cv, EX[arg], anim); } catch (err) { D.prefs.view3d = false; return render(); }
+      if (anim.steps) renderSteps();
+      let dragX = null;
+      cv.addEventListener('pointerdown', (e) => { dragX = e.clientX; cv.setPointerCapture(e.pointerId); });
+      cv.addEventListener('pointermove', (e) => { if (dragX == null) return; anim.yaw = ((anim.yaw + (e.clientX - dragX) * 0.8 + 540) % 360) - 180; dragX = e.clientX; });
+      const end = () => { if (dragX != null) { dragX = null; app().querySelectorAll('.view-seg button').forEach((b) => b.classList.toggle('on', +b.dataset.v === Math.round(anim.yaw))); if (anim.steps) renderSteps(); } };
+      cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+    } else if (view === 'exercise') {
       const svg = $('#anim');
       stopAnim = Figure.animate(svg, EX[arg], anim);
       if (anim.steps) renderSteps();
@@ -1664,6 +1992,13 @@
   function toast(s) { const el = $('#toast'); el.textContent = s; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (el.hidden = true), 2600); }
 
   // ------------------------------------------------------------------ events
+  // broken remote photos (offline): hide them (inline handlers are blocked by the CSP)
+  document.addEventListener('error', (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== 'IMG') return;
+    const box = el.closest('.photo-anim');
+    if (box) box.classList.add('noimg'); else el.style.visibility = 'hidden';
+  }, true);
   document.addEventListener('click', (e) => {
     const b = e.target.closest('[data-act],[data-tab],[data-lang]');
     if (!b) { if (e.target.id === 'modal') closeModal(); return; }
@@ -1715,6 +2050,26 @@
       }
       case 'manDel': D.program.manual[+d.i].items.splice(+d.j, 1); render(); break;
       case 'hType': hType = d.id; render(); break;
+      case 'openDevices': go('devices'); break;
+      case 'openReports': rep.anchor = null; go('reports'); break;
+      case 'hcConnect':
+        nativeHttp((cb) => Android.hcRequest(cb)).then((n) => { if (+n > 0) hcSync(400); else toast(t('hc_denied')); }).catch((e) => toast(e.message));
+        break;
+      case 'hcOpen': if (NATIVE) Android.hcOpen(); break;
+      case 'bleScan': liveWear.devices = {}; liveWear.scanning = true; Android.bleScan(); render(); renderDevList(); break;
+      case 'bleConnect': Android.bleConnect(d.id); break;
+      case 'bleDisconnect': Android.bleDisconnect(); liveWear.state = null; render(); break;
+      case 'repPeriod': rep.period = d.id; render(); break;
+      case 'repNav': {
+        const a = new Date(rep.anchor || Date.now()); const k = +d.d;
+        if (rep.period === 'day') a.setDate(a.getDate() + k); else if (rep.period === 'week') a.setDate(a.getDate() + 7 * k); else if (rep.period === 'month') a.setMonth(a.getMonth() + k); else a.setFullYear(a.getFullYear() + k);
+        rep.anchor = Math.min(Date.now(), a.getTime()); render(); break;
+      }
+      case 'repShare':
+        if (navigator.share) navigator.share({ title: 'FitCoach', text: window.__reportText }).catch(() => {});
+        else try { navigator.clipboard.writeText(window.__reportText); toast(t('copied')); } catch (e) {}
+        break;
+      case 'repPrint': if (NATIVE && Android.printPage) Android.printPage('FitCoach ' + t('reports')); else window.print(); break;
       case 'parqRedo': delete D.prefs.parq; saveData(); render(); break;
       case 'healthReport': healthReport(); break;
       case 'shareReport':
@@ -1743,7 +2098,12 @@
       case 'animSpeed': anim.speed = anim.speed < 1 ? 1 : 0.4; b.textContent = anim.speed < 1 ? '🐢 0.4×' : '1×'; break;
       case 'animSteps': anim.steps = !anim.steps; $('#stepsBox').hidden = !anim.steps; renderSteps(); break;
       case 'muscle': filter.muscle = d.id; tab('train'); break;
-      case 'fmuscle': filter.muscle = d.id; render(); break;
+      case 'fmuscle': filter.muscle = d.id; filter.limit = 30; render(); break;
+      case 'fsrc': filter.src = d.id; filter.limit = 30; render(); break;
+      case 'fkind': filter.kind = d.id; filter.limit = 30; render(); break;
+      case 'moreEx': filter.limit = (filter.limit || 30) + 40; { const y = window.scrollY; $('#exList').innerHTML = exList(); window.scrollTo(0, y); } break;
+      case 'toggle3d': D.prefs.view3d = D.prefs.view3d === false; saveData(); render(); break;
+      case 'aiTranslate': aiTranslate(d.id); break;
       case 'bodyMuscle':
         if (current === 'train') { filter.muscle = filter.muscle === d.group ? 'all' : d.group; render(); }
         else { filter.muscle = d.group; tab('train'); }
@@ -1825,5 +2185,6 @@
     stack = [['home']];
     if (await resumeSession()) { W = D.activeW || null; stack = [[!D.prefs.mode ? 'mode' : D.profile ? 'home' : 'me']]; }
     render();
+    autoSync();
   })();
 })();

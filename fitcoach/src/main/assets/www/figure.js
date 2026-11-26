@@ -234,7 +234,7 @@
     // cables (pulley -> hands)
     if (ex.cables) for (const c of ex.cables) {
       const to = c.to === 'C' ? v3.lerp(J.wrN, J.wrF, 0.5) : J['wr' + c.to];
-      back += `<line class="eq-cable" x1="${f1(P(c.from)[0])}" y1="${f1(P(c.from)[1])}" x2="${f1(P(to)[0])}" y2="${f1(P(to)[1])}"/>` + circ(P(c.from), 3, 'eq-pulley');
+      back += c.bar ? capsule(P(c.from), P(to), 2.6, 2.6, 'eq-bar') : `<line class="eq-cable" x1="${f1(P(c.from)[0])}" y1="${f1(P(c.from)[1])}" x2="${f1(P(to)[0])}" y2="${f1(P(to)[1])}"/>` + circ(P(c.from), 3, 'eq-pulley');
     }
 
     const Pd = (p) => P(p)[2];
@@ -373,6 +373,7 @@
         items.push([Pd(v3.lerp(mid, end, 0.6)) + 0.5, s]);
       }
     }
+    if (ex.plateAtHands) { const c = v3.add(v3.lerp(J.wrN, J.wrF, 0.5), [6, -2, 0]); items.push([Pd(c) + 0.6, disc(P, c, ex.plateAtHands, 'x', 'eq-plate')]); }
     // pads / foot plates attached to joints
     if (ex.tool === 'pad') items.push([Pd(J.anN) + 2, capsule(P(v3.add(J.anN, [2, 3, -10])), P(v3.add(J.anN, [2, 3, 10])), 6.5, 6.5, 'eq-pad')]);
     if (ex.jboxes) for (const j of ex.jboxes) {
@@ -430,5 +431,5 @@
     return [k1, mix(k1, k2, 0.5), k2].map((k) => `<svg class="fig" ${VB} aria-hidden="true">${draw(ex, k, opts)}</svg>`);
   }
 
-  window.Figure = { draw, animate, still, steps, setSex, defaultYaw };
+  window.Figure = { draw, animate, still, steps, setSex, defaultYaw, build, mix, staticProps, staticLines, pivot, GROUND, isFemale: () => sex === 'f' };
 })();

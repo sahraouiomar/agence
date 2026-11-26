@@ -36,6 +36,11 @@
     bar: T('Barre de traction', 'Pull-up bar', 'عقلة'),
     bench: T('Banc / chaise', 'Bench / chair', 'بنك / كرسي'),
     machine: T('Machine (salle)', 'Machine (gym)', 'آلة (قاعة رياضة)'),
+    cable: T('Poulie / câble', 'Cable', 'بكرة / كابل'),
+    kettlebell: T('Kettlebell', 'Kettlebell', 'كيتلبل'),
+    band: T('Élastique', 'Resistance band', 'مطاط مقاومة'),
+    ball: T('Ballon', 'Ball', 'كرة'),
+    other: T('Autre', 'Other', 'أخرى'),
   };
 
   const S = (fr, en, ar) => T(fr, en, ar);

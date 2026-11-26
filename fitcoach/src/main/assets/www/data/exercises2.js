@@ -70,7 +70,7 @@
       ],
       mistakes: [S('Tirer derrière la nuque.', 'Pulling behind the neck.', 'السحب خلف الرقبة.'), S('Se pencher très en arrière.', 'Leaning far back.', 'الميل كثيرًا للخلف.')],
       tip: S('Alternative aux tractions pour les débutants.', 'Pull-up alternative for beginners.', 'بديل العقلة للمبتدئين.'),
-      anchor: { p: 'hip', x: 92, y: 27 }, seat: [70, 108, 24], tool: 'cable',
+      anchor: { p: 'hip', x: 92, y: 27 }, seat: [70, 108, 24], handle: 'bar', props: [{ b: [54, 61, -3.5, 140, -5, 5], c: 'frame' }, { b: [54, 92, 136, 141, -3, 3], c: 'frame' }, { b: [55, 60, 0, 34, -4.5, 4.5], c: 'stack' }], cables: [{ from: [89, 136, 0], to: 'C' }],
       frames: [{ t: 95, l: 0, s: -90, a: 92, f: 92 }, { t: 100, l: 0, s: -90, a: -100, f: 80 }],
     },
     // ---------------- LOWER BACK ----------------

@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace = "tn.fitcoach"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "tn.fitcoach.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 4
+        versionName = "4.0"
     }
 
     // One APK per processor type keeps each download small (the native AI libraries are big).
@@ -56,4 +56,8 @@ dependencies {
     implementation("com.google.mlkit:image-labeling-custom:17.0.3")
     // Fingerprint / face / PIN unlock
     implementation("androidx.biometric:biometric:1.1.0")
+    // Smartwatch data through Health Connect (Samsung Health, Fitbit, Wear OS, Garmin, Zepp, Mi Fitness…)
+    implementation("androidx.health.connect:connect-client:1.1.0-beta01")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }

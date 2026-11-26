@@ -1,6 +1,12 @@
 package tn.fitcoach
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.print.PrintAttributes
+import android.print.PrintManager
+import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import android.accounts.AccountManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -81,6 +87,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var pendingWebCam: PermissionRequest? = null
     private var lastVideo: Uri? = null
     private var pendingAccountCb: String? = null
+    private var pendingHcCb: String? = null
+    private val health by lazy { HealthHub(this) }
+    private val ble by lazy { BleHub(this) { o -> js("window.__native && __native.onWear(${o})") } }
     /** true only while our own bundled page is displayed: the JS bridge refuses any other origin */
     @Volatile private var trustedPage = false
 
@@ -154,6 +163,37 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val name = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
             js("__native.onAccount(${q(cb)}, ${if (name == null) "null" else q(name)})")
         }
+
+    private val hcPermission =
+        registerForActivityResult(PermissionController.createRequestPermissionResultContract()) { granted ->
+            val cb = pendingHcCb ?: return@registerForActivityResult
+            pendingHcCb = null
+            js("__native.onHttp(${q(cb)}, ${q(granted.size.toString())}, null)")
+        }
+
+    private val blePermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
+            if (res.values.all { it }) startBleScan()
+            else js("window.__native && __native.onWear({type:'error', msg:'permission'})")
+        }
+
+    private val bleEnable =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { if (ble.enabled()) startBleScan() }
+
+    private fun blePerms(): Array<String> = if (Build.VERSION.SDK_INT >= 31)
+        arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+    else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+
+    private fun startBleScan() {
+        if (blePerms().any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) {
+            blePermission.launch(blePerms()); return
+        }
+        if (!ble.enabled()) {
+            try { bleEnable.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) } catch (_: Exception) {}
+            return
+        }
+        ble.scan()
+    }
 
     private val cameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -567,6 +607,60 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
+        // ---- Health Connect (smartwatch data) ----
+        @JavascriptInterface
+        fun hcStatus(): String = if (!ok()) "" else try { health.status() } catch (_: Exception) { "unavailable" }
+
+        /** Ask the user to allow FitCoach to read the health data. Result -> __native.onHttp(cb, nGranted) */
+        @JavascriptInterface
+        fun hcRequest(cb: String) {
+            if (!ok()) return
+            main.post { pendingHcCb = cb; try { hcPermission.launch(health.permissions) } catch (e: Exception) { pendingHcCb = null; js("__native.onHttp(${q(cb)}, null, ${q(e.message ?: "error")})") } }
+        }
+
+        /** Daily totals + measurements of the last N days. Result -> __native.onHttp(cb, json) */
+        @JavascriptInterface
+        fun hcRead(days: Int, cb: String) {
+            if (!ok()) return
+            main.post {
+                lifecycleScope.launch {
+                    try { js("__native.onHttp(${q(cb)}, ${q(health.read(days.coerceIn(1, 400)).toString())}, null)") }
+                    catch (e: Exception) { js("__native.onHttp(${q(cb)}, null, ${q(e.message ?: "error")})") }
+                }
+            }
+        }
+
+        /** Open Health Connect (install it from the Play Store if needed). */
+        @JavascriptInterface
+        fun hcOpen() {
+            if (!ok()) return
+            main.post {
+                val i = if (health.status() == "available") Intent("androidx.health.ACTION_HEALTH_CONNECT_SETTINGS")
+                else Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.google.android.apps.healthdata"))
+                try { startActivity(i) } catch (_: Exception) { openExternal("https://play.google.com/store/apps/details?id=com.google.android.apps.healthdata") }
+            }
+        }
+
+        // ---- Bluetooth LE (live heart rate, blood pressure monitor, oximeter, scale) ----
+        @JavascriptInterface
+        fun bleScan() { if (ok()) main.post { startBleScan() } }
+
+        @JavascriptInterface
+        fun bleConnect(id: String) { if (ok()) main.post { ble.connect(id) } }
+
+        @JavascriptInterface
+        fun bleDisconnect() { if (ok()) main.post { ble.disconnect() } }
+
+        /** Print the current page / save it as PDF (reports). */
+        @JavascriptInterface
+        fun printPage(title: String) {
+            if (!ok()) return
+            main.post {
+                val pm = getSystemService(PrintManager::class.java) ?: return@post
+                pm.print(title.take(60), web.createPrintDocumentAdapter(title.take(60)), PrintAttributes.Builder().build())
+            }
+        }
+
         @JavascriptInterface
         fun isNative(): Boolean = true
     }
@@ -583,6 +677,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         tts?.shutdown()
+        try { ble.disconnect() } catch (_: Exception) {}
         worker.shutdownNow()
         net.shutdownNow()
         web.destroy()

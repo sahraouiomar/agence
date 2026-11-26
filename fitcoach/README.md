@@ -2,11 +2,29 @@
 
 Application Android : **programme d'entraînement de 4 mois**, **exercices en 3D**, **correction de posture par caméra (IA)**, **calories par photo**, **code-barres**, **suivi santé** et **conseils**, en **français, anglais ou arabe**.
 
-📥 **APK (version 3.0, Android 8.0+)** :
-- [`apk/FitCoach.apk`](../apk/FitCoach.apk) — téléphones récents (processeur 64 bits, ~76 Mo) ← **à prendre en priorité**
-- [`apk/FitCoach-armv7.apk`](../apk/FitCoach-armv7.apk) — anciens téléphones 32 bits (~65 Mo)
+📥 **APK (version 4.0, Android 8.0+)** :
+- [`apk/FitCoach.apk`](../apk/FitCoach.apk) — téléphones récents (processeur 64 bits, ~83 Mo) ← **à prendre en priorité**
+- [`apk/FitCoach-armv7.apk`](../apk/FitCoach-armv7.apk) — anciens téléphones 32 bits (~71 Mo)
 
 > Installation : copier l'APK sur le téléphone → l'ouvrir → autoriser « Installer des applications inconnues ».
+
+## Nouveautés de la version 4.0
+
+- ⌚ **Montres connectées** :
+  - **Health Connect** (passerelle santé officielle d'Android) : lecture des pas, distance, calories, fréquence cardiaque (moyenne / min / max / repos), sommeil, séances, SpO2, tension, poids et glycémie venant de **Samsung Galaxy Watch, Pixel Watch / Fitbit, Wear OS, Garmin, Xiaomi (Mi Fitness), Amazfit (Zepp), Huawei (via Health Sync), Withings, Polar, Oura**… jusqu'à 400 jours, synchro automatique.
+  - **Bluetooth direct** (profils standards) : **fréquence cardiaque en temps réel** pendant la séance (ceintures, Polar, Garmin / Amazfit en « diffusion FC », Wear OS via une app de diffusion), **tensiomètres**, **oxymètres** et **balances** Bluetooth ; zones cardiaques (FC max de Tanaka) et calories de la séance calculées à partir du pouls (formule de Keytel).
+- 📊 **Rapports santé jour / semaine / mois / année** : pas, sommeil, pouls au repos, minutes actives, tension, poids, calories mangées — graphiques, comparaison avec la période précédente, objectifs (8 000 pas, 7–9 h de sommeil, 150 min d'activité OMS), analyse automatique, **partage** et **PDF / impression**.
+- 🧍 **Vrai personnage 3D** (WebGL, three.js) : corps éclairé avec ombres, vêtements, homme ou femme, rotation à 360°, matériel en 3D ; vue dessin plus légère au choix.
+- 📸 **Bibliothèque de 876 exercices avec photos réelles** (départ / arrivée) issue de **free-exercise-db** (domaine public, trouvée sur GitHub) : 148 exercices de **machines et poulies** traduits en français et en arabe avec photos incluses hors-ligne, les autres avec photos en ligne ; instructions en anglais, traduisibles par l'IA avancée ; utilisables dans les séances et le programme manuel.
+- 🏋️ **12 nouvelles machines en 3D** dont les **machines de cardio** : tapis de course, vélo, rameur, elliptique, simulateur d'escalier, hack squat, rowing T-bar, pec deck inversé, kickback fessier, curl pupitre, dips machine, crunch machine → **96 exercices en 3D** (+ 876 en photos).
+
+### Recherche GitHub (v4)
+
+- `yuhonas/free-exercise-db` (Unlicense, 2 000+ ★) : **intégré** (876 exercices + photos).
+- `boytchev/mannequin.js` : personnage 3D articulé, mais sous licence **GPL-3.0** (obligerait toute l'app à passer en GPL) → non intégré ; nous avons construit notre propre personnage 3D avec **three.js (MIT)**.
+- `harshvishu/free-exercise-db-with-videos` : vidéos hébergées par un tiers, origine des vidéos incertaine → non intégré.
+- `Freeyourgadget/Gadgetbridge` (AGPL-3.0) : protocoles propriétaires de nombreuses montres, licence incompatible → remplacé par **Health Connect** (officiel) + profils Bluetooth standards.
+- `nikosavola/Wristbeat` (Apache-2.0) : app Wear OS qui diffuse le pouls en Bluetooth standard → recommandée dans l'app pour les montres Wear OS.
 
 ## Nouveautés de la version 3.0
 
